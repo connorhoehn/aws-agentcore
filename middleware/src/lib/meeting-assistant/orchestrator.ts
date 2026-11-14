@@ -329,14 +329,22 @@ export class AssistantRuntime {
     const run = this.runs.get(callId);
     if (!run || run.finished) return;
     run.finished = true; run.relay.clear();
-    await this.serial(run, async () => { await this.closeSession(run, 'stop'); });
-    await this.expireOpenTurns(run, false);
-    await this.closeListening(callId);
-    this.runs.delete(callId);
-    if (!this.runs.size) this.disarmTimer();
-    await this.deps.onFinished?.({
-      callId, usageSeconds: run.totals.seconds, tokens: { input: run.totals.input, output: run.totals.output, cached: run.totals.cached }, sessionKind: run.sessionKind,
-    });
+    // Whatever a step before it throws, the audio and the tap are released and the settlement is told: money is booked once, here.
+    const guarded = async (step: () => Promise<void>): Promise<void> => {
+      try { await step(); } catch (e) { console.warn('[meeting-assistant] stop step failed', (e as Error).message); }
+    };
+    try {
+      await guarded(() => this.serial(run, async () => { await this.closeSession(run, 'stop'); }));
+      await guarded(() => this.expireOpenTurns(run, false));
+      await guarded(() => this.closeListening(callId));
+    } finally {
+      this.deps.audio?.detach(callId);
+      this.runs.delete(callId);
+      if (!this.runs.size) this.disarmTimer();
+      await this.deps.onFinished?.({
+        callId, usageSeconds: run.totals.seconds, tokens: { input: run.totals.input, output: run.totals.output, cached: run.totals.cached }, sessionKind: run.sessionKind,
+      });
+    }
   }
 
   async dispose(): Promise<void> {
@@ -411,12 +419,13 @@ export class AssistantRuntime {
 
   /** Close the current session on purpose; fold its usage into the totals; expire reads that were waiting on it. */
   private async closeSession(run: CallRun, why: 'pause' | 'stop'): Promise<void> {
+    // Paused or left: the audio token dies with the session, before anything else. Also with no session open (a replacement
+    // under way when the ceiling is reached), so a tap never outlives the call's stop.
+    this.deps.audio?.detach(run.ctx.callId);
     const session = run.session;
     if (!session) return;
     run.intentionalClose = true;
     run.session = null;
-    // Paused or left: the audio token dies with the session, before anything else.
-    this.deps.audio?.detach(run.ctx.callId);
     try { await session.close(); } catch (e) { console.warn('[meeting-assistant] session close failed', (e as Error).message); }
     this.foldUsage(run);
     for (const off of run.unsubscribers.splice(0)) off();

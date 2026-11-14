@@ -912,6 +912,25 @@ describe('the asker is judged when the request was made (S2)', () => {
   });
 });
 
+describe('stop always settles and releases the audio', () => {
+  it('a store error before the settlement does not skip it, and the audio is detached', async () => {
+    await runtime.stop(CALL);
+    const detached: string[] = [];
+    runtime = new AssistantRuntime({
+      store: () => store, intake: () => intake, clock: () => now, makeSession: () => factory(), rolesOf: async (u) => roles[u] ?? [],
+      onFinished: async (e) => { finished.push(e); }, audio: { attach: () => undefined, suspend: () => undefined, detach: (c: string) => { detached.push(c); } } as never,
+    }, { tickMs: 0 });
+    await runtime.start(ctx);
+    const spy = jest.spyOn(store, 'listTurns').mockRejectedValue(new Error('store down'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await runtime.stop(CALL);
+    spy.mockRestore(); warn.mockRestore();
+    expect(finished.map((f) => f.callId)).toEqual([CALL]);
+    expect(detached).toContain(CALL);
+    expect(runtime.isRunning(CALL)).toBe(false);
+  });
+});
+
 describe('a failed replacement retries, then leaves (B9)', () => {
   class FailingStart extends FakeSession { async start(): Promise<void> { throw new Error('provider unavailable'); } }
   const withWaits = async () => {
