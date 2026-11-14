@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { Guard, DEADMAN_PATH, deadmanMsFor, maxMinutesFor } from './safety.mjs';
+import { Guard, DEADMAN_PATH, deadmanMsFor, maxMinutesFor, PRICE_PER_MINUTE } from './safety.mjs';
 import { FakeProvider, PassThroughProxy, startFakeMedia } from './fakes.mjs';
 import { Lane } from './audio.mjs';
 
@@ -307,6 +307,7 @@ export async function billingOf(person, call) {
     if (mine.length) ledger = mine.map((e) => ({ sourceId: e.sourceId, seconds: e.seconds ?? e.quantity, costUsd: e.costUsd ?? e.amountUsd ?? e.usd, basis: e.basis }));
     else await sleep(400);
   }
-  const ledgerSeconds = ledger ? ledger.reduce((n, e) => n + (Number(e.seconds) || 0), 0) : null;
+  // A ledger entry carries its cost (and sometimes its seconds): the seconds are what the cost buys at the provider's rate.
+  const ledgerSeconds = ledger ? Math.round(ledger.reduce((n, e) => n + (Number(e.seconds) || (Number(e.costUsd) || 0) / PRICE_PER_MINUTE * 60), 0)) : null;
   return { listeningSeconds: state?.listeningSeconds, ledger, ledgerSeconds, state };
 }
