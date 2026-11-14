@@ -227,6 +227,14 @@ export interface ToolContext {
   /** The shell's presence roster (activity `online`) and the tenant lobby's writers (set_status); null when there is none. */
   presence?: PresenceAccess | null;
   /**
+   * A write from a call: the record must be named exactly (a typed ref, or its full title with exactly one hit). A
+   * position, a loose or partial name and several hits are refused, so the card never lands on a record the asker did
+   * not see named. The voice navigator's own dock leaves it off and keeps its looser matching.
+   */
+  strictTargets?: boolean;
+  /** With strictTargets: the records the resolvers settled on, so the card can end with what was changed. */
+  resolvedTargets?: Array<{ ref: string; title: string }>;
+  /**
    * Outside Social: the access-catalog item that grants posting there, from GET /api/social/plane/capabilities
    * (`requestItemId`, present when PostMessage is false). A refused post or call offers its request (G10).
    */
@@ -272,8 +280,12 @@ export function pageRows(ctx: ToolContext): { page: PublishedPage; rows: readonl
   return { page, rows: page.rows.slice(0, PAGE_ROWS_MAX) };
 }
 
+/** What a card shows when a write from a call named no single record exactly. */
+export const STRICT_SENTENCE = "Say the record's full name.";
+
 /** Row `n` (1-based) of the page in view, or the refusal. */
 export function pageRowAt(ctx: ToolContext, n: number): { row: PageRow } | { result: ToolResult } {
+  if (ctx.strictTargets) return { result: refused(STRICT_SENTENCE) };
   const read = pageRows(ctx);
   if ('result' in read) return read;
   const row = read.rows[n - 1];
@@ -285,6 +297,15 @@ const ROW_KIND_WORDS = new Set(['the', 'a', 'an', 'one', 'bug', 'story', 'task',
 
 export function pageRowNamed(ctx: ToolContext, said: string): { row: PageRow } | { result: ToolResult } {
   const t = said.trim();
+  if (ctx.strictTargets) {
+    if (/^\d{1,2}$/.test(t) || !t) return { result: refused(STRICT_SENTENCE) };
+    const read = pageRows(ctx);
+    if ('result' in read) return read;
+    const hits = read.rows.filter((r) => r.ref === t || r.title.trim().toLowerCase() === t.toLowerCase());
+    if (hits.length !== 1) return { result: refused(STRICT_SENTENCE) };
+    ctx.resolvedTargets?.push({ ref: hits[0]!.ref, title: hits[0]!.title });
+    return { row: hits[0]! };
+  }
   if (/^\d{1,2}$/.test(t)) return pageRowAt(ctx, Number(t));
   const read = pageRows(ctx);
   if ('result' in read) return read;
@@ -1489,7 +1510,9 @@ export async function findByName(ctx: ToolContext, kind: string, name: string, o
   const gate = kindGate(spec, ctx);
   if (gate) return { result: gate };
   let said = name.trim();
-  if (/^\d{1,2}$/.test(said)) {
+  const strict = ctx.strictTargets === true;
+  if (strict && (!said || /^\d{1,2}$/.test(said))) return { result: refused(STRICT_SENTENCE) };
+  if (!strict && /^\d{1,2}$/.test(said)) {
     const kept = ctx.results?.find(said);
     if (!kept) return { result: refused(`There is no row ${said} in the last result. List them first.`) };
     said = kept.ref;
@@ -1508,7 +1531,14 @@ export async function findByName(ctx: ToolContext, kind: string, name: string, o
   const one = spec.one ?? spec.label.replace(/s$/, '');
   if (byId) {
     const hit = rows.find((r) => r.id === byId);
+    if (hit && strict) ctx.resolvedTargets?.push({ ref: `${kind}:${hit.id}`, title: hit.title });
     return hit ? { row: hit } : { result: refused(`I found no ${one} "${byId}" you can act on.`) };
+  }
+  if (strict) {
+    const same = rows.filter((r) => r.title.trim().toLowerCase() === said.toLowerCase());
+    if (same.length !== 1) return { result: refused(STRICT_SENTENCE) };
+    ctx.resolvedTargets?.push({ ref: `${kind}:${same[0]!.id}`, title: same[0]!.title });
+    return { row: same[0]! };
   }
   const q = said.toLowerCase();
   const needles = wordsOf(q);

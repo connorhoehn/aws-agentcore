@@ -752,3 +752,23 @@ test('G50: findByName and matchByName offer near names instead of not-found', as
   assert.deepEqual(matchByName(bots, (b) => b.name, 'doc-linter').map((b) => b.name), ['Docs linter']);
   assert.deepEqual(matchByName(bots, (b) => b.name, 'zebra'), []);
 });
+
+test('S4: a write from a call resolves its record exactly', async () => {
+  const { findByName, STRICT_SENTENCE } = await import('../tools.ts');
+  const rows = [{ id: 'w-9', title: 'Onboarding flow', projectId: 'p-auth' }, { id: 'w-2', title: 'Rotate keys', projectId: 'p-auth' }, { id: 'w-3', title: 'Rotate keys', projectId: 'p-auth' }];
+  const { fetch } = fakeFetch([route('GET', '/api/graph/work', 200, rows)]);
+  const strict = () => { const resolvedTargets: Array<{ ref: string; title: string }> = []; return { resolvedTargets, ctx: toolContext({ fetch, results: new ResultMemory(), strictTargets: true, resolvedTargets }) }; };
+  const hit = strict();
+  const exact = await findByName(hit.ctx, 'work-item', '  onboarding FLOW ');
+  assert.ok('row' in exact && exact.row.id === 'w-9', 'an exact title, ignoring case and spaces, is the row');
+  assert.deepEqual(hit.resolvedTargets, [{ ref: 'work-item:w-9', title: 'Onboarding flow' }]);
+  const typed = await findByName(strict().ctx, 'work-item', 'work-item:w-2');
+  assert.ok('row' in typed && typed.row.id === 'w-2', 'a typed reference is the row');
+  for (const said of ['2', 'onboarding', 'onboard docs', 'Rotate keys', '']) {
+    const refused = await findByName(strict().ctx, 'work-item', said);
+    assert.ok('result' in refused, `"${said}" is refused`);
+    assert.equal(('result' in refused ? refused.result.summary : ''), STRICT_SENTENCE);
+  }
+  const loose = await findByName(toolContext({ fetch, results: new ResultMemory() }), 'work-item', 'onboarding');
+  assert.ok('row' in loose, 'the voice navigator keeps its looser matching');
+});

@@ -36,7 +36,10 @@ const sentence = (s: unknown, fallback: string): string => {
  * Runs one tool for a person in a call, with that person's own context. `write` says the server made this turn for a
  * confirmed card; a turn for a read never runs a tool that needs a confirm card.
  */
-export async function runCallTool(name: string, rawArgs: unknown, ctx: ToolContext, opts: { write: boolean }): Promise<CallToolOutcome> {
+export async function runCallTool(name: string, rawArgs: unknown, given: ToolContext, opts: { write: boolean }): Promise<CallToolOutcome> {
+  // A write names its record exactly (tools.ts strictTargets); the resolvers report what they settled on.
+  const resolved: Array<{ ref: string; title: string }> = [];
+  const ctx: ToolContext = opts.write ? { ...given, strictTargets: true, resolvedTargets: resolved } : given;
   if (CALL_EXCLUDED_TOOLS.has(name)) return { ok: false, error: 'That cannot be done from a call.' };
   const prepared = prepareToolCall(name, rawArgs, ctx);
   if (!prepared.ok) return { ok: false, error: sentence(prepared.result.output['say'] ?? prepared.result.summary, 'You cannot do that here.') };
@@ -46,17 +49,23 @@ export async function runCallTool(name: string, rawArgs: unknown, ctx: ToolConte
   let plan: unknown;
   if (opts.write && VOICE_PLANNERS[name]) {
     const planned = await planPreparedCall(call, ctx, VOICE_PLANNERS);
-    if (planned && 'result' in planned) return outcomeOf(name, call.args, planned.result, true);
+    if (planned && 'result' in planned) return outcomeOf(name, call.args, planned.result, true, resolved);
     plan = planned?.plan.data;
   }
-  return outcomeOf(name, call.args, await runPreparedCall(call, ctx, VOICE_RUNNERS, plan), opts.write);
+  return outcomeOf(name, call.args, await runPreparedCall(call, ctx, VOICE_RUNNERS, plan), opts.write, resolved);
 }
 
-function outcomeOf(name: string, args: unknown, given: ToolResult, write: boolean): CallToolOutcome {
+function outcomeOf(name: string, args: unknown, given: ToolResult, write: boolean, resolved: ReadonlyArray<{ title: string }> = []): CallToolOutcome {
   const res = withFailure(given, name);
   if (res.outcome !== 'done') return { ok: false, error: sentence(res.output['say'] ?? res.output['reason'] ?? res.summary, 'It did not work.') };
   let output = wireOutput(name, args, res);
   if (write && typeof output['say'] !== 'string') output = { ...output, say: 'Done.' };
+  // The card ends with what was changed: the resolved record's own title.
+  const title = resolved[0]?.title.trim();
+  const say = output['say'];
+  if (write && title && typeof say === 'string' && !say.toLowerCase().includes(title.toLowerCase())) {
+    output = { ...output, say: `${say.replace(/[.\s]+$/, '')}: ${title}.` };
+  }
   if (JSON.stringify(output).length > MAX_RESULT_CHARS) output = { say: sentence(output['say'], 'Done.'), truncated: true };
   return { ok: true, output };
 }
