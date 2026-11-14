@@ -178,11 +178,12 @@ export async function eraseAssistantMessages(callId: string): Promise<number> {
   for (const m of rows) {
     if (m.userId !== NOVA_USER_ID || m.deletedAt) continue;
     const isCard = m.metadata?.['kind'] === 'assistant-action';
-    const already = m.message === DELETED_RECORD_LINE && (!isCard || (m.metadata?.['summary'] === DELETED_RECORD_LINE && m.metadata?.['detail'] === undefined && m.metadata?.['resultText'] === undefined));
+    const already = m.message === DELETED_RECORD_LINE && (isCard ? (m.metadata?.['summary'] === DELETED_RECORD_LINE && m.metadata?.['detail'] === undefined && m.metadata?.['resultText'] === undefined) : m.metadata?.['meetingCallId'] === undefined);
     if (already) continue;
     const patch = isCard
       ? { message: DELETED_RECORD_LINE, metadata: { summary: DELETED_RECORD_LINE, detail: undefined, resultText: undefined, tool: { name: String((m.metadata?.['tool'] as { name?: unknown } | undefined)?.name ?? ''), argsDigest: '' } } }
-      : { message: DELETED_RECORD_LINE };
+      // A closing notice also loses its link to the meeting page: the page is gone with the record.
+      : { message: DELETED_RECORD_LINE, metadata: { meetingCallId: undefined } };
     if (await updateThreadMessage(channel, m.id, patch, chatStore())) changed += 1;
   }
   return changed;
