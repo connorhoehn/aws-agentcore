@@ -1060,9 +1060,11 @@ Plan: `docs/meeting-assistant-design.md`. An assistant, shown as Nova, that a pe
 - One paid run of the real provider behind the whole server chain passed 28 checks for about $0.04: right speaker on every line, silence during chatter, an answer and an action card for the right people, 57 voice frames relayed.
 - The `meeting-assistant` journey has 32 steps. The verification chain now also prints the component-discipline count; this feature had raised it from 9 to 11 and it is back at 9.
 
+**Second sweep, 14 November.** Four read-only audit passes at `7cde1944` found one high finding (reads about the asker alone, such as unread messages, are answered to the whole call), fifteen medium and a list of low ones; nothing that stores audio, exposes a secret or runs a write without the card. The findings, in order of repair, are in `docs/meeting-assistant-audit.md` under "Second sweep". Do not hold the real call below before the first group is repaired. A scenario suite for the paid simulator is being built to reproduce the findings against the real provider and to prove the repairs.
+
 What needs the owner:
 
-1. A real call. Set `MEETING_ASSISTANT_ENABLED=true`, the three media variables and `MEETING_ASSISTANT_SINK_SECRET` (and the matching `LIVE_CAPTIONS_SHARED_SECRET` and `LIVE_CAPTIONS_ORIGIN` on the media server), then hold a call with two people, invite Nova, and check: quiet until addressed over ten minutes, the right name on each line, an answer and a card, and, with the voice on, whether Nova's own speech comes back through a microphone.
+1. A real call. Set `MEETING_ASSISTANT_ENABLED=true`, `MEETING_ASSISTANT_LIVE=1` (in the mock world the session is scripted and no tap is armed without it), the three media variables and `MEETING_ASSISTANT_SINK_SECRET` (and the matching `LIVE_CAPTIONS_SHARED_SECRET` and `LIVE_CAPTIONS_ORIGIN` on the media server), then hold a call with two people, invite Nova, and check: quiet until addressed over ten minutes, the right name on each line, an answer and a card, and, with the voice on, whether Nova's own speech comes back through a microphone.
 2. The media server should stop listing tap destinations to callers below admin (a change in that repository).
 3. The SQL stores have never run against a real database; their statements are checked as text only.
 4. Private answers stay in the asker's notification inbox after a record is deleted, because the notification service has no delete.

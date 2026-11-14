@@ -2,7 +2,7 @@
 
 13 November 2026. Audited at `eb6cff56`, after packages 1 to 6a (`docs/meeting-assistant-design.md`).
 
-**Status, 14 November.** The nine blocking findings and the medium ones are repaired and merged; a second audit found the blockers closed (see "After the repairs" at the end). The verdict below is the first audit's and is kept as written.
+**Status, 14 November.** The nine blocking findings and the medium ones are repaired and merged; a second audit found the blockers closed (see "After the repairs" at the end). The verdict below is the first audit's and is kept as written. A second full sweep on 14 November at `7cde1944` found one new high finding and fifteen medium ones (see "Second sweep" at the end); the feature stays off for real calls until those are repaired.
 
 ## Verdict
 
@@ -94,4 +94,72 @@ Still open:
 - The media server still lists tap destinations to a holder of a publisher-level credential for the channel. The per-call token in the address is therefore not enough on its own, which is why the second secret exists; the listing itself is not changed.
 - The SQL stores have never run against a real database. Their statements are checked as text only.
 - No real call has been made. One paid run on 14 November put the real provider behind the whole server chain with a simulator in place of the media server's taps, and passed (`docs/meeting-assistant-design.md`, "The paid run"). The media server's own taps, real microphones and sound in a browser are still unproven.
-- The component-discipline check rose from 9 failing checks to 11 with this feature (three decisions asked in dialogs, one control off the table scale). They were converted the same night; the check is now part of the verification chain.
+
+Closed the same night: The component-discipline check rose from 9 failing checks to 11 with this feature (three decisions asked in dialogs, one control off the table scale). They were converted the same night; the check is now part of the verification chain.
+
+## Second sweep (14 November)
+
+Audited at `7cde1944`, after packages 1 to 7, the repairs and the re-audit fixes. Four read-only passes, each on one slice: authority and the life of the records; the orchestrator, the live session and money; the audio path in and Nova's voice out; the portal, the walk and the documents. The one high finding and the medium findings marked "read" were checked a second time against the lines.
+
+### Verdict
+
+One high finding, fifteen medium, and a list of low ones. The feature stays off for real calls until the high finding and the medium findings about replies, askers and the card are repaired.
+
+Nothing was found that stores or logs audio, exposes a key or a token, lets a person post as Nova, reads another call's record by changing an id, or runs a write without the asker's card. The parts repaired after the first audit held.
+
+### High
+
+- **S1. Reads about the asker alone are answered to the whole call (read).** Only two tools are treated as private. A read is classified by its tool name and not by its arguments, so reads that return one person's own things (their unread messages, their direct messages, their missed calls, their review queue) count as ordinary reads. Their results go to the shared session and are spoken and posted to everyone. Together with S2 a person who only says the name at the wrong moment can have their own things read out for someone else's question. Repair: classify by tool and arguments, so that person-scoped reads take the private path, or do not offer them in a meeting.
+
+### Medium: replies, askers and the card
+
+- **S2. The asker is judged when the tool call arrives, not when the request was made (read).** The model works for some seconds before its tool call reaches the server. The provider reports the moment that work began, but nothing listens for it. A person who addresses Nova in between becomes the asker, and their browser runs the read or receives the card. Repair: record the moment the work began, find the asker at that moment, and count the call as open from then.
+- **S3. Real answers can be dropped or mislabelled.** While any read waits on its asker's browser (up to 90 seconds when that tab is gone), every utterance of Nova's counts as an acknowledgement and nothing is posted for anyone. A muted reply context (after a refusal, an expiry or a private answer) swallows another person's answer for 8 seconds. A public context labels another person's answer with the wrong asker. No private content is involved. Repair: limit the acknowledgement rule to the first seconds of a call, never let a muted context replace a live public one, and end a context when a different person addresses Nova.
+- **S4. The card shows what was said; the record is chosen after the confirmation (read).** A write is planned in the asker's browser only after they confirm, and the resolved target is never shown. A name is matched loosely, and a position in a list is read from that browser's own last list, which need not be the list Nova read out. The write can land on a record the asker never saw named. Repair: accept only exact references for writes from a call, or plan before the card and show the resolved target on it.
+
+### Medium: records and restarts
+
+- **S5. A failed delete cannot be repeated.** The tombstone is written before Nova's chat messages are blanked, and a tombstone makes the next delete a 404. If the chat step fails, Nova's replies and cards stay in the chat until the retention sweep. Repair: the inviter's delete runs the chat step again on a record that is already deleted.
+- **S6. A crash followed by a restart inside 90 seconds is never reconciled.** The check at boot skips fresh heartbeats and runs once. The record stays listening with nothing listening, the tap keeps posting, and the used minutes are never booked; a later dismiss or call end finds no run and settles nothing. Repair: run the check again on a timer, and settle in the dismiss and call-end paths when there is no run.
+- **S7. Listening and paused records are exempt from retention with no time bound.** Only a dismiss, a seen call end or a later boot ends them, and the call-end listener does nothing while the flag is off. A call that outlives the restart that turned the feature off keeps its words past the retention period. Repair: the sweep ends any such record whose heartbeat is older than the hard maximum plus a margin.
+- **S8. The retention sweep fails silently after one log line.** With the SQL statements unproven against a database, stored words could outlive the period with no signal. Repair: log again when the message changes or once a day, and expose the time of the last good sweep.
+
+### Medium: audio and voice
+
+- **S9. Attribution favours a loud microphone and sparse noise (needs a test).** A line's speaker is ranked by raw level times time over a widened window. A much louder neighbour, or key clicks joined into one voiced stretch, can outrank the real speaker of a short line, and a request is then judged as the other person's. Repair: weigh by voiced time, normalise the level for each participant, and require the first-ranked speaker to cover most of the line's own span.
+- **S10. The echo guard's window is shorter than the delays in front of it (needs a test).** The guard ends half a second after the last relayed frame and wants the line wholly inside it. Playout, the jitter buffer and the stamping lag can put the end of an echo after that, and the last piece is then stored under whoever's microphone caught it. Repair: a tail of about a second and a half, judged by overlap.
+- **S11. Deleting a tap is one attempt that is not recorded.** A failed delete is forgotten, so the tap keeps posting after a pause or a dismiss until the call ends or the next boot (the sink refuses it unread). The detach is also skipped when the ceiling is reached during a replacement. Repair: retry failed deletes, and detach in the stop path whatever happened before.
+- **S12. Nothing arms again after the one-minute give-up.** If no audio producer appears within a minute, the chat says Nova cannot hear the call yet and nothing retries; the paid session stays open on silence until someone pauses and resumes. Repair: a slow retry while listening, or pause and release the hold.
+
+### Medium: portal, documents and the paid script
+
+- **S13. Meetings is in the navigation with the flag off.** The nav entry, the palette row and the routes do not read what the session advertises, and the list answers 404 when the feature is off, so a default install has an entry that opens an error. Repair: hide them unless the feature is advertised.
+- **S14. The real-call recipe left out the switch that makes it real.** In the mock world, without `MEETING_ASSISTANT_LIVE=1`, the session is scripted and no tap is armed: Nova is invited, hears nothing and reports no error. Fixed in `docs/next-steps.md` with this write-up.
+- **S15. The paid script's stop lived only in the script.** No signal handlers and no ceiling on the server side: stopping the script alone left its middleware and the real session running to the default ceiling. Its stop also waited on calls with no time limit and reported a dismissal it had not checked. Being repaired with the scenario suite (a short server ceiling, a dead-man timer in the child, signal handlers, a time-boxed dismiss).
+
+- **S16. The minutes notice ends in a path as plain text.** The closing notice names the meeting page by its path, which nobody can click. Repair: carry it as a page reference the chat renders as a link.
+
+### Low
+
+- **Money.** The stop path has no guard, so a store error can skip the settlement, and a failed settlement is never retried. A close that times out books less than the wall clock. The hold can expire during a long pause, and delegation tokens are booked but never held. Two extensions at once can lose a hold.
+- **Session.** The provider's message text is logged up to 200 characters although the session keeps codes only for that reason. A pause posts the half sentence in flight, and a read cut by a pause uses the wrong words. A speaker's name reaches the model's context uncleaned. One tick loop has no guard for each run. A place name that begins with the assistant's name counts as an address at the start of a sentence.
+- **Records.** Open cards stay open after a delete, so a late result can write onto a blanked card. The Meetings list uses a JSON operator the data API may read as a placeholder. A record can stick in the invited state. A duplicate line arriving twice at once throws on the SQL store where the memory store returns nothing. Every poll writes attendance. The purge depends on the chat step. Two comments are stale.
+- **Audio and voice.** One late voice frame drops the rest of the utterance. The frame counter restarts with the run, so open browsers ignore frames after a restart. Frames queue while the browser's audio is suspended. The mixer's catch-up after a stall is unbounded. One lane per person garbles two devices, and lanes are never released. Other browsers learn the voice switch by the poll. Bindings outlive a call that ends without a dismiss. Two functions have no callers. With the mock world and a real media server configured together, the test-only route can return a real call's sink token.
+- **Portal.** The card's initiative line shows on every create. A write confirmed late is done but its result is dropped, because the claim does not return the new expiry. Poll loops can stack on a visibility change, and executor requests have no time limit. The bar is an empty ruled slot for someone who cannot invite. The notice says 30 days in fixed text though retention is a setting.
+- **Documents.** The plan says the journey shows the ceiling warning and that a validator script exists; neither does. Its restart risk and its portal flag in decision 13 do not match the code.
+
+### The walk
+
+Five steps prove less than their titles: the second-tab step never has a second runner; the meetings-row step matches the empty-table message too; the work-item step is satisfied by a link label; the minutes-link step is a substring check; the invite step makes the inviter's name optional. Two voice steps prove the server sent nothing, not that the browser stopped.
+
+No step at all: a turn run in a hidden tab; a reload during a turn; an expired or failed card; the time-left mark; Nova's chat messages after a delete; the media-id report; the flag off.
+
+### Order of repair
+
+1. S1 to S4, with scenario runs as the proof.
+2. S5 to S8 and the money lows.
+3. S9 to S12, measured by the crosstalk, loud-neighbour and echo scenarios.
+4. S13 and S16, the portal lows, and the weak walk steps.
+5. The documents.
+
+A scenario suite for the paid simulator is being built alongside: twelve scripted calls against the real provider (personal and private reads, two askers, ten quiet minutes, crosstalk, a loud neighbour, echo, forms of address, a late joiner, pause and dismiss, confirm and decline, a dropped connection). Its results will be recorded in `docs/meeting-assistant-design.md`.
