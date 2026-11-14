@@ -13,6 +13,7 @@
 // affordance is missed in practice, revisit by setting forceMount on the
 // synthetic commands.
 
+import { meetingsAdvertised } from '../../lib/meetingAssistantModel';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { Command } from '@connorhoehn/ui-components/shared';
@@ -49,7 +50,7 @@ export interface PageEntry {
       (middleware/src/lib/voice/catalogue.ts NAVIGATE_PAGES); omitted = not offered to voice. */
   pageId?: string;
   /** A page whose route exists only behind a feature (`features` in lib/features.ts): the palette hides it while that is off. */
-  feature?: 'voiceLog';
+  feature?: 'voiceLog' | 'meetingAssistant';
 }
 
 interface RecentRun {
@@ -156,7 +157,7 @@ export const PAGES: readonly PageEntry[] = [
     keywords: ['ask', 'search', 'chat', 'agent', 'help', 'explore', 'graph', 'connections'] },
   { label: 'Communication',      hint: 'Social channels and direct messages here, and the huddles you joined on initiative pages', path: '/iq/communication', tenant: 'orgiq', group: 'Engage', pageId: 'communication',
     keywords: ['communication', 'social', 'chat', 'message', 'dm', 'channel', 'mention', 'call', 'calls', 'huddle', 'missed', 'meeting', 'history'] },
-  { label: 'Meetings',           hint: 'Minutes and transcripts of calls Nova listened to', path: '/iq/meetings',                                  tenant: 'orgiq',  group: 'Engage', pageId: 'meetings',
+  { label: 'Meetings',           hint: 'Minutes and transcripts of calls Nova listened to', path: '/iq/meetings',                                  tenant: 'orgiq',  group: 'Engage', pageId: 'meetings', feature: 'meetingAssistant',
     keywords: ['meeting', 'meetings', 'minutes', 'transcript', 'nova', 'notes', 'action items', 'summary', 'call notes'] },
   { label: 'Scores',             hint: 'Per-person influence leaderboard',    path: '/iq/scores',                                  tenant: 'orgiq',  group: 'Engage', pageId: 'scores', roles: PLATFORM,
     keywords: ['score', 'leaderboard', 'influence'] },
@@ -435,7 +436,7 @@ export function usePortalCommands(): Command[] {
     const switchTo = (p: PageEntry): string | null =>
       isPageVisible(p, tenant, role) || !isPageVisible(p, tenant, 'admin') ? null : offerPage(session, p.roles).switchTo;
     const pageCommands: Command[] = PAGES
-      .filter((p) => (isPageVisible(p, tenant, role) || switchTo(p) != null) && (!p.feature || features[p.feature]))
+      .filter((p) => (isPageVisible(p, tenant, role) || switchTo(p) != null) && (!p.feature || (p.feature === 'meetingAssistant' ? meetingsAdvertised(session) : features[p.feature])))
       .sort((a, b) => groupRank(tenant, a.group) - groupRank(tenant, b.group))
       .map((p) => ({
         id: `page:${p.path}`,

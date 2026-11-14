@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { meetingsAdvertised } from '../../lib/meetingAssistantModel';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import {
   CommandPalette,
@@ -90,7 +91,7 @@ interface WorkSummary {
 }
 
 type Tenant = 'orgiq' | 'assessment' | 'social' | 'pipelines' | 'access' | 'admin';
-type NavItem = { path: string; label: string; requireRoles?: string[]; tenant: Tenant | 'universal'; group?: string };
+type NavItem = { path: string; label: string; requireRoles?: string[]; tenant: Tenant | 'universal'; group?: string; /** Listed only while the server advertises the meeting assistant. */ needsMeetingAssistant?: boolean };
 
 // The app is an SDLC agent platform first — agents that link codebases, run in
 // computers, and deliver reviewed changes. The rail IS the SDLC, phase by
@@ -145,7 +146,7 @@ const NAV_ITEMS: NavItem[] = [
   // (Social reads gate on the Social grant at the BFF; no grant → the plane's own denied state).
   { path: '/iq/communication', label: 'Communication', tenant: 'orgiq',  group: 'Engage' },
   // The minutes and transcripts of calls Nova listened to; a flat table of the viewer's own meetings, so no section rail.
-  { path: '/iq/meetings',   label: 'Meetings',    tenant: 'orgiq',     group: 'Engage' },
+  { path: '/iq/meetings',   label: 'Meetings',    tenant: 'orgiq',     group: 'Engage', needsMeetingAssistant: true },
   // Ask is also the "find help" surface: its empty state offers questions
   // from your own work, and answers grow an evidence rail (people + matched
   // skills + documents, score-free) via /api/graph/help. Scores stays the
@@ -411,6 +412,7 @@ function ShellLayout() {
   // The rail lists only what the role the viewer is acting as can open. A page another held role opens is
   // offered by the ⌘K palette and voice `open` with the switch as its hint (lib/pageAccess.ts), never here.
   const navItems = NAV_ITEMS.filter((item) => {
+    if (item.needsMeetingAssistant && !meetingsAdvertised(session)) return false;
     if (item.tenant !== 'universal' && item.tenant !== 'admin' && !tenantEnabled(item.tenant)) return false;
     if (item.tenant === 'universal') return true;
     if (session?.role === 'admin') return item.tenant === session?.tenant;

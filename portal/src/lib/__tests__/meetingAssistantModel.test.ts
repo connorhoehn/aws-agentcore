@@ -90,3 +90,12 @@ test('the call state carries the call initiative', () => {
   assert.equal(parseAssistantState('c1', { state: 'listening', initiativeId: 'p-1' }).initiativeId, 'p-1');
   assert.equal(parseAssistantState('c1', { state: 'listening' }).initiativeId, null);
 });
+
+test('S13: Meetings shows only while the session advertises the feature', async () => {
+  const { meetingsAdvertised } = await import('../meetingAssistantModel.ts');
+  const { PALETTE } = await import('./../voice/__tests__/voiceHarness.ts');
+  assert.equal(meetingsAdvertised({ meetingAssistant: true }), true);
+  for (const s of [{ meetingAssistant: false }, {}, null, undefined]) assert.equal(meetingsAdvertised(s), false);
+  const row = PALETTE.pages.find((p) => p.path === '/iq/meetings') as { feature?: string } | undefined;
+  assert.equal(row?.feature, 'meetingAssistant', 'the palette row is tied to the flag');
+});

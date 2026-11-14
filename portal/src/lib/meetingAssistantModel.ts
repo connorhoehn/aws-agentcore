@@ -26,6 +26,9 @@ export interface AssistantView {
 /** The state is refreshed this often while a call is live (docs: keep any poll at 5 s or slower). */
 export const ASSISTANT_POLL_MS = 5000;
 
+/** Meetings (the nav entry, the palette row, both routes) exist only while the session says the server runs the feature. */
+export const meetingsAdvertised = (session: { meetingAssistant?: boolean } | null | undefined): boolean => session?.meetingAssistant === true;
+
 export const ASSISTANT_NAME = 'Nova';
 export const ASSISTANT_LABEL = 'Assistant';
 
