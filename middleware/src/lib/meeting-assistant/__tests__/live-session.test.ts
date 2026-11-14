@@ -292,6 +292,18 @@ describe('usage and close', () => {
     expect(s.answerToolCall('call_x', '{}')).toBe(false);
   });
 
+  it('a close that times out books at least the wall clock', async () => {
+    let now = 1_000_000;
+    const { s, seen } = make({ hangup: jest.fn(async () => true), clock: () => now });
+    await s.start(START);
+    frame({ type: 'session.usage.updated', usage: { seconds: 30 } });
+    await tick();
+    now += 90_500;
+    await s.close();
+    expect(seen.closed).toEqual([{ reason: 'close-timeout' }]);
+    expect(seen.usage.at(-1)).toMatchObject({ seconds: 91, estimated: true });
+  });
+
   it('an unexpected close hangs up once over HTTPS and books the larger of the provider figure and the wall clock', async () => {
     const hangup = jest.fn(async () => true);
     let now = 1_000_000;

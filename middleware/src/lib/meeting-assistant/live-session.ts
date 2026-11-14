@@ -177,6 +177,8 @@ export class OpenAiLiveSession extends SessionEmitter implements LiveMeetingSess
       // No `session.closed`: hang up over HTTPS so it cannot keep billing, and report what we last knew.
       const id = this.providerSessionId;
       if (id) { try { await (this.opts.hangup ?? hangupLiveSession)(id); } catch { /* best effort */ } }
+      // The provider never confirmed its last figure: book at least the wall clock, as the dropped path does.
+      if (this.started) this.bookWallClock();
       this.finish('close-timeout');
     }
     try { this.socket?.close(1000); } catch { /* already closed */ }
@@ -190,10 +192,7 @@ export class OpenAiLiveSession extends SessionEmitter implements LiveMeetingSess
   private dropped(reason: string): void {
     if (this.ended) return;
     if (this.closing === null && this.started) {
-      const wall = Math.ceil(this.sinceStart() / 1000);
-      const estimated = wall > this.seconds;
-      if (estimated) this.seconds = wall;
-      this.emit('usage', { seconds: this.seconds, backendTokens: { ...this.tokens }, ...(estimated ? { estimated: true } : {}) });
+      this.bookWallClock();
       const id = this.providerSessionId;
       if (id) { void Promise.resolve().then(() => (this.opts.hangup ?? hangupLiveSession)(id)).catch(() => undefined); }
     }
@@ -291,6 +290,14 @@ export class OpenAiLiveSession extends SessionEmitter implements LiveMeetingSess
       const last = this.tailLeft === 0;
       this.emit('outputAudio', { pcm: Buffer.from(pcm), seq: this.audioSeq, ...(last ? { last: true as const } : {}) });
     }
+  }
+
+  /** Report usage as the larger of the provider's last figure and the wall clock since `session.started`, rounded up. */
+  private bookWallClock(): void {
+    const wall = Math.ceil(this.sinceStart() / 1000);
+    const estimated = wall > this.seconds;
+    if (estimated) this.seconds = wall;
+    this.emit('usage', { seconds: this.seconds, backendTokens: { ...this.tokens }, ...(estimated ? { estimated: true } : {}) });
   }
 
   private sinceStart(): number { return Math.max(0, this.clock() - this.startedWall); }
