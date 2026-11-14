@@ -15,6 +15,8 @@ export const PROVIDER_HOST = 'api.openai.com';
 const VAD_MS = 900;
 /** Where the provider's audio clock puts a moment of the call: the mixer's playout delay (300 ms) plus the first 100 ms frame. */
 export const PIPELINE_MS = 400;
+/** Quietest mixed-audio level (rms) the fake provider counts as speech heard. */
+const HEARD_RMS = 150;
 
 /**
  * A provider that does exactly what the scenario says (no model, no loudness test). Each utterance the scenario places on a lane is
@@ -31,7 +33,7 @@ export const PIPELINE_MS = 400;
 export class FakeProvider {
   constructor({ port }) {
     this.port = port; this.entries = []; this.echoes = []; this.t0Wall = 0; this.connections = 0; this.live = new Set();
-    this.seen = { frames: 0, bytes: 0, badFrames: 0, started: 0, closed: 0, toolResults: 0, wallStart: 0, wallLast: 0, voicedSent: 0, silentSent: 0, replies: [], calls: [], deltas: 0, cuts: 0, hangups: 0 };
+    this.seen = { frames: 0, bytes: 0, badFrames: 0, started: 0, closed: 0, toolResults: 0, wallStart: 0, wallLast: 0, voicedSent: 0, silentSent: 0, replies: [], calls: [], deltas: 0, cuts: 0, hangups: 0, unheard: 0 };
     this.replySpans = new Map(); // dry.id -> { startMs, endMs, text } on the connection that spoke it
     this.wss = null;
   }
@@ -57,7 +59,7 @@ export class FakeProvider {
 
   onConnection(ws) {
     this.connections += 1; this.live.add(ws);
-    const st = { audioMs: 0, anchor: 0, speaking: 0, outSeq: 0, openedAt: Date.now(), calls: new Map(), callNo: 0, sentCalls: 0 };
+    const st = { audioMs: 0, anchor: 0, speaking: 0, outSeq: 0, openedAt: Date.now(), calls: new Map(), callNo: 0, sentCalls: 0, rms: [] };
     const silent = Buffer.alloc(4800).toString('base64');
     const tone = Buffer.alloc(4800); for (let i = 0; i < 2400; i += 1) tone.writeInt16LE(Math.round(3000 * Math.sin((2 * Math.PI * 330 * i) / 24000)), i * 2);
     const voiced = tone.toString('base64');
@@ -78,6 +80,10 @@ export class FakeProvider {
       for (const { e, start, end } of due) {
         e.done.add(ws);
         if (end < 0) continue; // spoken before this connection began
+        // The provider only transcribes what it hears: nothing audible in its own audio over this span (the line was dropped before the
+        // mix: not acknowledged, paused, muted) and nothing is sent.
+        const from = Math.max(0, Math.floor(start / 100)), to = Math.ceil(end / 100);
+        if (Math.max(0, ...st.rms.slice(from, to + 1)) < HEARD_RMS) { this.seen.unheard += 1; continue; }
         const dry = e.dry ?? {};
         const delta = typeof dry.transcript === 'string' ? dry.transcript : e.text;
         if (!delta) continue;
@@ -117,6 +123,7 @@ export class FakeProvider {
         st.outSeq += 1;
         if (st.speaking > 0) { st.speaking -= 1; this.seen.voicedSent += 1; send({ type: 'session.output_audio.delta', delta: voiced, event_id: `out_${st.outSeq}` }); }
         else { this.seen.silentSent += 1; send({ type: 'session.output_audio.delta', delta: silent, event_id: `out_${st.outSeq}` }); }
+        { let sum = 0; const n = buf.length / 2; for (let i = 0; i < n; i += 1) { const v = buf.readInt16LE(i * 2); sum += v * v; } st.rms.push(Math.sqrt(sum / Math.max(1, n))); }
         st.audioMs += (buf.length / 2 / 24000) * 1000;
       } else if (ev.type === 'response.item.create') {
         this.seen.toolResults += 1;
