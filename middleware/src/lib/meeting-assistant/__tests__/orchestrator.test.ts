@@ -920,6 +920,7 @@ describe('stop always settles and releases the audio', () => {
       store: () => store, intake: () => intake, clock: () => now, makeSession: () => factory(), rolesOf: async (u) => roles[u] ?? [],
       onFinished: async (e) => { finished.push(e); }, audio: { attach: () => undefined, suspend: () => undefined, detach: (c: string) => { detached.push(c); } } as never,
     }, { tickMs: 0 });
+    finished.length = 0;
     await runtime.start(ctx);
     const spy = jest.spyOn(store, 'listTurns').mockRejectedValue(new Error('store down'));
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
