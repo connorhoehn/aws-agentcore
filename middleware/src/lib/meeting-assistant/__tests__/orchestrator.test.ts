@@ -932,6 +932,25 @@ describe('stop always settles and releases the audio', () => {
   });
 });
 
+describe('the tick guards each run', () => {
+  it('one run failing does not stop the others being checked', async () => {
+    const OTHER = 'call-2';
+    await store.create({
+      callId: OTHER, tenant: 'orgiq', lobby: 'orgiq:initiative:p-auth', initiativeId: 'p-auth', state: 'listening', invitedBy: ALICE, invitedAt: now,
+      pausedBy: null, leftAt: null, leftBy: null, acked: [ALICE], attendees: [ALICE], presentAtInvite: [ALICE],
+      requests: 0, linesStored: 0, nextSeq: 1, pendingRequests: [], session: newAssistantSession(3600),
+    });
+    await runtime.start({ ...ctx, callId: OTHER });
+    const real = store.listTurns.bind(store);
+    const calls: string[] = [];
+    const spy = jest.spyOn(store, 'listTurns').mockImplementation(async (c, f) => { calls.push(c); if (c === CALL) throw new Error('boom'); return real(c, f); });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await runtime.tick();
+    spy.mockRestore(); warn.mockRestore();
+    expect(calls).toEqual(expect.arrayContaining([CALL, OTHER]));
+  });
+});
+
 describe('a failed replacement retries, then leaves (B9)', () => {
   class FailingStart extends FakeSession { async start(): Promise<void> { throw new Error('provider unavailable'); } }
   const withWaits = async () => {

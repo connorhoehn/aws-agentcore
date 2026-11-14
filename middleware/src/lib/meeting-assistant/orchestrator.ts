@@ -977,16 +977,21 @@ export class AssistantRuntime {
   async tick(): Promise<void> {
     const now = this.now();
     for (const run of [...this.runs.values()]) {
-      if (run.finished) continue;
-      if (now - run.attendanceAt >= ATTENDANCE_EVERY_MS) { run.attendanceAt = now; await this.snapshotAttendance(run.ctx.callId); }
-      if (now - run.heartbeatAt >= HEARTBEAT_EVERY_MS) await this.heartbeat(run);
-      await this.checkCeiling(run);
-      if (run.finished) continue;
-      if (run.session && run.expiresAt !== null && now >= run.expiresAt - SESSION_EXPIRY_MARGIN_MS) await this.replaceBeforeExpiry(run);
-      if (run.finished) continue;
-      const due = (await this.store.listTurns(run.ctx.callId, { statuses: ['pending', 'running'] })).filter((t) => t.expiresAt <= now);
-      for (const t of due) await this.expireTurn(run, t);
+      // One run's error is its own: the others still get their heartbeat, ceiling and expiry.
+      try { await this.tickRun(run, now); } catch (e) { console.warn('[meeting-assistant] tick failed', (e as Error).message); }
     }
+  }
+
+  private async tickRun(run: CallRun, now: number): Promise<void> {
+    if (run.finished) return;
+    if (now - run.attendanceAt >= ATTENDANCE_EVERY_MS) { run.attendanceAt = now; await this.snapshotAttendance(run.ctx.callId); }
+    if (now - run.heartbeatAt >= HEARTBEAT_EVERY_MS) await this.heartbeat(run);
+    await this.checkCeiling(run);
+    if (run.finished) return;
+    if (run.session && run.expiresAt !== null && now >= run.expiresAt - SESSION_EXPIRY_MARGIN_MS) await this.replaceBeforeExpiry(run);
+    if (run.finished) return;
+    const due = (await this.store.listTurns(run.ctx.callId, { statuses: ['pending', 'running'] })).filter((t) => t.expiresAt <= now);
+    for (const t of due) await this.expireTurn(run, t);
   }
 
   /**
