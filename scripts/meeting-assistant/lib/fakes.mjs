@@ -81,7 +81,7 @@ export class FakeProvider {
         const dry = e.dry ?? {};
         const delta = typeof dry.transcript === 'string' ? dry.transcript : e.text;
         if (!delta) continue;
-        send({ type: 'session.input_transcript.delta', start_ms: Math.max(0, start), end_ms: Math.max(1, end), delta: ` ${delta}` }); this.seen.deltas += 1;
+        send({ type: 'session.input_transcript.delta', start_ms: Math.max(0, Math.round(start)), end_ms: Math.max(1, Math.round(end)), delta: ` ${delta}` }); this.seen.deltas += 1;
         if (dry.reply) later(dry.delayMs ?? 400, () => speakText(dry.reply.text, dry.reply.frames ?? 25, dry.id));
         if (dry.call) later(dry.delayMs ?? 400, () => {
           st.callNo += 1; const callId = `call_dry_${this.connections}_${st.callNo}`; st.calls.set(callId, e); this.seen.calls.push(dry.call.name);
@@ -99,7 +99,7 @@ export class FakeProvider {
         const start = span.startMs + ec.delayMs, end = span.endMs + ec.delayMs;
         if (end + VAD_MS > now) continue;
         ec.done.add(ws);
-        send({ type: 'session.input_transcript.delta', start_ms: start, end_ms: end, delta: ` ${ec.text ?? span.text}` }); this.seen.deltas += 1;
+        send({ type: 'session.input_transcript.delta', start_ms: Math.round(start), end_ms: Math.round(end), delta: ` ${ec.text ?? span.text}` }); this.seen.deltas += 1;
       }
     };
     const ticker = setInterval(pending, 50); ticker.unref?.();

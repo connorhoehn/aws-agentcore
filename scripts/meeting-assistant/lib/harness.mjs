@@ -5,7 +5,7 @@
 //   world.mjs   the middleware child, people, calls, the check classes
 // plus the helpers a scenario's body uses (`setup`, `waitFor`, `until`).
 import { PEOPLE, Call, World, Reporter, sleep, billingOf } from './world.mjs';
-import { synth, msOf, concat, silence } from './audio.mjs';
+import { synth, msOf, concat, silence, gained, resample, pcmFromBase64 } from './audio.mjs';
 
 export * from './safety.mjs';
 export * from './audio.mjs';
@@ -58,6 +58,24 @@ export function makeContext({ world, reporter, minutes = null, dry }) {
   ctx.debug = async () => { if (!process.env.MA_DEBUG) return; const raw = await ctx.p[ctx.inviterKey].call('GET', `/api/calls/${encodeURIComponent(ctx.call.callId)}/chat?limit=100`); console.log(`     [debug] chat http ${raw.status} ${JSON.stringify(raw.json)?.slice(0, 300)}`); const m = raw.json?.messages ?? []; for (const x of m) console.log(`     [debug] chat ${x.userId} ${x.metadata?.kind ?? ''} ${String(x.message).slice(0, 110)}`); const tl = await ctx.call.transcript(); for (const l of tl) console.log(`     [debug] line ${l.userId} ${JSON.stringify(l.speakers ?? [])} ${l.startMs}-${l.endMs} at=${l.at} ${l.text.slice(0, 60)}`); console.log(`     [debug] provider ${JSON.stringify(world.provider?.seen)}`); const st = await ctx.call.state(); console.log(`     [debug] state ${JSON.stringify(st)}`); };
   ctx.novaMessages = () => ctx.call.novaMessages(ctx.p[ctx.inviterKey]);
   return ctx;
+}
+
+/**
+ * A laptop speaker: every `assistant-audio` frame `person` receives is resampled to 16 kHz, attenuated by `gainDb`, delayed by `delayMs`
+ * and mixed into `lane`, contiguously (frames arriving in a burst are laid end to end). Held in memory only; nothing is written.
+ */
+export function attachEcho({ clock, person, lane, delayMs, gainDb = -12 }) {
+  const ctl = { frames: 0, nextAt: 0, lastEndMs: 0, firstAtMs: null, lastSeen: false };
+  const g = 10 ** (gainDb / 20);
+  person.audioHook = (data) => {
+    const pcm = gained(resample(pcmFromBase64(data?.pcm), data?.sampleRate ?? 24_000, 16_000), g);
+    const now = clock.now();
+    const at = Math.max(now + delayMs, ctl.nextAt);
+    lane.inject(pcm, at - now);
+    ctl.frames += 1; ctl.nextAt = at + msOf(pcm); ctl.lastEndMs = ctl.nextAt; ctl.firstAtMs ??= at; ctl.lastSeen = data?.last === true;
+  };
+  ctl.detach = () => { person.audioHook = null; };
+  return ctl;
 }
 
 export { PEOPLE, Call, World, Reporter, sleep, billingOf, synth, msOf, concat, silence };

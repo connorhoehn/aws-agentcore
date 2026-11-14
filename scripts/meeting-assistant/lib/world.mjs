@@ -115,7 +115,7 @@ export class Person {
     this.ws = new WebSocket(`ws://127.0.0.1:${this.port}/ws`, ['bearer-token-v1', this.realtime]);
     this.ws.addEventListener('message', (e) => {
       let f; try { f = JSON.parse(String(e.data)); } catch { return; }
-      if (f?.type === 'assistant-audio') { this.audioFrames += 1; if (this.keepAudioFrames) this.frames.push(f); if (Array.isArray(this.audioKeep)) this.audioKeep.push(f.data); return; }
+      if (f?.type === 'assistant-audio') { this.audioFrames += 1; if (this.keepAudioFrames) this.frames.push(f); this.audioHook?.(f.data); if (Array.isArray(this.audioKeep)) this.audioKeep.push(f.data); return; }
       this.frames.push(f); if (this.frames.length > 4000) this.frames.splice(0, 1000);
     });
     await new Promise((resolve, reject) => { this.ws.addEventListener('open', () => resolve()); this.ws.addEventListener('error', () => reject(new Error('socket refused'))); });
