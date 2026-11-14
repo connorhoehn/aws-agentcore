@@ -34,7 +34,7 @@ const HEARD_RMS = 150;
 export class FakeProvider {
   constructor({ port }) {
     this.port = port; this.entries = []; this.echoes = []; this.t0Wall = 0; this.connections = 0; this.live = new Set();
-    this.seen = { frames: 0, bytes: 0, badFrames: 0, started: 0, closed: 0, toolResults: 0, wallStart: 0, wallLast: 0, voicedSent: 0, silentSent: 0, replies: [], calls: [], deltas: 0, cuts: 0, hangups: 0, unheard: 0 };
+    this.seen = { frames: 0, bytes: 0, badFrames: 0, started: 0, closed: 0, toolResults: 0, wallStart: 0, wallLast: 0, voicedSent: 0, silentSent: 0, replies: [], calls: [], deltas: 0, cuts: 0, hangups: 0, unheard: 0, startedAt: [], instructions: [] };
     this.replySpans = new Map(); // dry.id -> { startMs, endMs, text } on the connection that spoke it
     this.wss = null;
   }
@@ -114,7 +114,9 @@ export class FakeProvider {
     ws.on('message', (data) => {
       let ev; try { ev = JSON.parse(String(data)); } catch { return; }
       if (ev.type === 'session.start') {
-        this.seen.started += 1; st.openedAt = Date.now();
+        this.seen.started += 1; st.openedAt = Date.now(); this.seen.startedAt.push(Date.now());
+        // What the session was told at its start (kept in memory so a scenario can check a replacement was given the call so far).
+        this.seen.instructions.push(String(ev.session?.instructions ?? JSON.stringify(ev).slice(0, 6000)));
         send({ type: 'session.started', client_event_id: ev.event_id, session: { id: `live_dry_${this.connections}`, status: 'active' } });
       } else if (ev.type === 'session.input_audio.append') {
         const buf = Buffer.from(String(ev.audio ?? ''), 'base64');
