@@ -21,7 +21,7 @@ import { NOVA_NAME } from './chat-types.js';
 import {
   nameOf, postAction, postNoticeQuietly, postPrivately, postReply, moveAction,
 } from './chat.js';
-import { MEETING_EXCLUDED_TOOLS, PRIVATE_TOOLS, meetingBackendInstructions, meetingFunctionTools, meetingInstructions, meetingTools } from './instructions.js';
+import { MEETING_EXCLUDED_TOOLS, isPrivateRead, meetingBackendInstructions, meetingFunctionTools, meetingInstructions, meetingTools } from './instructions.js';
 import { VoicedTimeline, attribute } from './attribution.js';
 import { OUT_RATE } from './mixer.js';
 import { NovaSpeech, VoiceRelay, voiceChannel, type VoiceSink } from './voice.js';
@@ -191,11 +191,11 @@ const capText = (v: unknown, n: number): string => (typeof v === 'string' ? v : 
  * `confirm` / `noConfirm` flags say (they are for one person's own dock): the catalogue marks a read-only tool with `kind: 'read'`,
  * so any other kind is a write. Decision 6's private list is the other exception.
  */
-export function classifyCall(name: string, _args: unknown): TurnKind | null {
+export function classifyCall(name: string, args: unknown): TurnKind | null {
   const tool = voiceTool(name);
   if (!tool) return null;
   if (tool.kind !== 'read' || tool.confirm) return 'write';
-  return PRIVATE_TOOLS.has(name) ? 'private-read' : 'read';
+  return isPrivateRead(name, args) ? 'private-read' : 'read';
 }
 
 const KIND_LABELS: Readonly<Record<string, string>> = { 'work-item': 'work item', 'saved-search': 'saved search', 'access-request': 'access request' };

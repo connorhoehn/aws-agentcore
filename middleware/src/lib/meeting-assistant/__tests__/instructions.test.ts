@@ -1,4 +1,4 @@
-import { cleanName, meetingInstructions, rosterList, NAME_MAX_CHARS, ROSTER_MAX_NAMES } from '../instructions.js';
+import { PRIVATE_READ_RULES, PRIVATE_TOOLS, isPrivateRead, meetingTools, cleanName, meetingInstructions, rosterList, NAME_MAX_CHARS, ROSTER_MAX_NAMES } from '../instructions.js';
 
 describe('names in the session instructions', () => {
   it('quotes the roster under a line that says they are data', () => {
@@ -33,5 +33,57 @@ describe('names in the session instructions', () => {
     const text = meetingInstructions({ tenant: 't', roster: [], recordName: null });
     expect(text).toContain('not known by name');
     expect(text).not.toContain('This meeting is about');
+  });
+});
+
+describe('which reads answer only to the asker (S1)', () => {
+  const argFor = (tool: string, rule: { arg: string }, value: string): Record<string, unknown> =>
+    tool === 'get' ? { ref: `${value}:x-1` } : { [rule.arg]: value };
+
+  for (const [tool, rule] of Object.entries(PRIVATE_READ_RULES)) {
+    for (const value of Object.keys(rule.private)) {
+      it(`${tool} ${rule.arg}=${value} is private`, () => { expect(isPrivateRead(tool, argFor(tool, rule, value))).toBe(true); });
+    }
+    for (const value of rule.public) {
+      it(`${tool} ${rule.arg}=${value} is a shared record and stays public`, () => { expect(isPrivateRead(tool, argFor(tool, rule, value))).toBe(false); });
+    }
+    it(`${tool} with a missing or unknown ${rule.arg} is private`, () => {
+      if (tool !== 'search') expect(isPrivateRead(tool, {})).toBe(true);
+      expect(isPrivateRead(tool, argFor(tool, rule, 'something-new'))).toBe(true);
+      expect(isPrivateRead(tool, null)).toBe(tool === 'search' ? false : true);
+    });
+  }
+
+  it('the always-private tools are private whatever the arguments', () => {
+    for (const t of PRIVATE_TOOLS) expect(isPrivateRead(t, { scope: 'initiative' })).toBe(true);
+  });
+
+  it('a list of "mine", of reports, of the page in view or of the asker\'s own work is private; a named person\'s is not', () => {
+    expect(isPrivateRead('list', { kind: 'work-item', filter: { scope: 'mine' } })).toBe(true);
+    expect(isPrivateRead('list', { kind: 'request', filter: { scope: 'reports' } })).toBe(true);
+    expect(isPrivateRead('list', { kind: 'work-item', filter: { who: 'Me' } })).toBe(true);
+    expect(isPrivateRead('list', { kind: 'initiative', scope: 'this-page' })).toBe(true);
+    expect(isPrivateRead('list', { kind: 'work-item', filter: { who: 'Ada Demo', status: 'blocked' } })).toBe(false);
+    expect(isPrivateRead('list', { kind: 'work-item', filter: { scope: 'all' } })).toBe(false);
+  });
+
+  it('a position in the last result has no kind and is private', () => {
+    expect(isPrivateRead('get', { ref: '2' })).toBe(true);
+  });
+
+  it('public reads: an initiative, a work item list, a decision lookup, a workspace search, the sweeps', () => {
+    expect(isPrivateRead('get', { ref: 'initiative:p-12', part: 'work' })).toBe(false);
+    expect(isPrivateRead('list', { kind: 'decision', filter: { status: 'waiting' } })).toBe(false);
+    expect(isPrivateRead('search', { query: 'kubernetes' })).toBe(false);
+    expect(isPrivateRead('summary', { kind: 'sweeps', since: 'yesterday' })).toBe(false);
+    expect(isPrivateRead('activity', { scope: 'online' })).toBe(false);
+  });
+
+  it('every read tool a meeting offers is reviewed: always private or in the table', () => {
+    for (const t of meetingTools('orgiq').filter((x) => x.kind === 'read')) expect(PRIVATE_TOOLS.has(t.name) || t.name in PRIVATE_READ_RULES).toBe(true);
+  });
+
+  it('the instructions say that questions about a person\'s own messages, calls, pins and queue are answered privately', () => {
+    expect(meetingInstructions({ tenant: 'orgiq', roster: [], recordName: null })).toMatch(/own messages, calls, pins and queue, which are answered privately/);
   });
 });

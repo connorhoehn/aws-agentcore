@@ -29,7 +29,7 @@ jest.mock('../chat.js', () => {
 
 import { LineIntake } from '../intake.js';
 import { voiceTool } from '../../voice/catalogue.js';
-import { PRIVATE_TOOLS, meetingTools } from '../instructions.js';
+import { meetingTools } from '../instructions.js';
 import { MemoryAssistantStore } from '../store.js';
 import { MockTranscriptSource } from '../transcript-source.js';
 import { AssistantRuntime, startTurnSweep, TYPED_UNSUPPORTED_REPLY, READ_TURN_TTL_MS, WRITE_TURN_TTL_MS, classifyCall, describeCall, type StartContext } from '../orchestrator.js';
@@ -151,7 +151,8 @@ describe('what a session is started with', () => {
     expect(voiceTool('set_status')!.confirm).toBe(false);
     expect(classifyCall('set_status', { status: 'away', message: null })).toBe('write');
     expect(describeCall('set_status', { status: 'away', message: 'out today' }).summary).toBe('Set your status to away: out today');
-    for (const t of meetingTools('orgiq')) expect(classifyCall(t.name, {})).toBe(t.kind === 'read' ? (PRIVATE_TOOLS.has(t.name) ? 'private-read' : 'read') : 'write');
+    // with no arguments every read fails closed to private, except a search (no type is the workspace index)
+    for (const t of meetingTools('orgiq')) expect(classifyCall(t.name, {})).toBe(t.kind === 'read' ? (t.name === 'search' ? 'read' : 'private-read') : 'write');
     expect(describeCall('create', { kind: 'work-item', fields: { title: 'the login cookie bug' } }).summary).toBe('Create a work item titled "the login cookie bug"');
   });
 
@@ -843,6 +844,30 @@ describe('a private read never passes through the shared session (B2)', () => {
     await submitClaimed(CALL, t2!.turnId, BOB, { ok: true, output: { say: `x\n\u0007${'y'.repeat(700)}` } });
     expect(mockPosts.privates[0]!.text).toHaveLength(600);
     expect(mockPosts.privates[0]!.text).not.toMatch(/[\u0000-\u001f]/);
+  });
+});
+
+describe('reads about the asker alone are answered privately (S1)', () => {
+  it('a person-scoped read takes the private path: the session and the call chat never see its output', async () => {
+    const s = await realRuntime();
+    await line(BOB, 'Nova, what are my unread messages?', now - 2000);
+    s.call('call_m', 'activity', { scope: 'messages', since: null, who: null }); await flush();
+    const [turn] = await runtime.turnsFor(CALL, BOB);
+    expect(turn!.kind).toBe('private-read');
+    await submitClaimed(CALL, turn!.turnId, BOB, { ok: true, output: { rows: [{ title: 'Quiet secret plan' }], say: 'You have one unread message about the quiet plan.' } });
+    expect(s.answersFor('call_m').map(([, o]) => o)).toEqual(['{"status":"answered_privately"}']);
+    expect(JSON.stringify(s.answers)).not.toContain('quiet');
+    expect(s.contexts.join(' ')).not.toContain('quiet');
+    expect(mockPosts.replies).toEqual([{ text: 'Answered privately for Bob.', askedBy: BOB, askedByName: 'Bob' }]);
+    expect(mockPosts.privates).toEqual([{ userId: BOB, text: 'You have one unread message about the quiet plan.' }]);
+  });
+
+  it('a shared record read stays public', async () => {
+    const s = await realRuntime();
+    await line(BOB, 'Nova, list the initiatives.', now - 2000);
+    s.call('call_i', 'list', { kind: 'initiative' }); await flush();
+    const [turn] = await runtime.turnsFor(CALL, BOB);
+    expect(turn!.kind).toBe('read');
   });
 });
 
