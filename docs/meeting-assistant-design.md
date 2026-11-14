@@ -65,7 +65,7 @@ Not determined: the longest a session may run, whether a quiet session bills les
 10. **Spend.** Listening costs money for every minute Nova is in the call. The session reserves against the inviter's budget, on the call's initiative when it has one, under a new spend source `meeting_assistant`. A call has a ceiling in minutes (default 60); Nova says so in the chat five minutes before, and anyone who may invite can extend it. Tool-call tokens settle as the voice navigator's do.
 11. **Session length.** The provider's session carries an expiry about two hours after it starts (read from its own events on 13 November). The server replaces the session five minutes before that, and after an unexpected close, starting the new one with a short summary of the call so far.
 12. **Mock first.** The default mock world gets an injector for attributed transcript lines and a scripted stand-in for the live session, so every behaviour is walked headlessly without media, a microphone or a paid session.
-13. **Off by default.** One server flag and one portal flag. A new policy action, `InviteMeetingAssistant`, decides who may invite.
+13. **Off by default.** One server flag, `MEETING_ASSISTANT_ENABLED`; the portal shows Nova, the Meetings list and the meeting page only while the session advertises it (there is no separate portal flag). A new policy action, `InviteMeetingAssistant`, decides who may invite.
 14. **Outside guests.** Calls in this product have no guests today. If a lobby type later admits them, Nova leaves when one joins.
 
 ## Architecture
@@ -156,10 +156,11 @@ What that run does not show: the media server's own taps (the simulator stood in
 
 ## How it is judged
 
-- A journey, `meeting-assistant`, on the default mock world at 1440 and 1280: invite, notice shown to a second participant, nothing stored for a participant who has not acknowledged, a read answer lands in chat labelled with the asker, a write shows a card that only the asker can confirm, a second person's "yes" does nothing, a tool call with no name in the asker's recent words is refused, pause stops storing lines, the ceiling warning appears, dismiss posts minutes, the meeting page shows them, a person who was not in the call is refused.
+- A journey, `meeting-assistant`, on the default mock world at 1440 and 1280: invite, notice shown to a second participant, nothing stored for a participant who has not acknowledged, a read answer lands in chat labelled with the asker, a write shows a card that only the asker can confirm, a second person's "yes" does nothing, a tool call with no name in the asker's recent words is refused, pause stops storing lines, dismiss posts minutes, the meeting page shows them, a person who was not in the call is refused.
 - Unit tests for attribution (clean turns, overlap, a speaker who joins late), the mixer and the name lock.
 - The scope matrix and the voice inventory classify every new route.
-- A validator script that runs the journey and the unit suites, in the same form as the learning loop's.
+- No validator script of its own: the journey and the unit suites run in the verification chain with the other journeys. The ceiling warning has unit tests but no journey step.
+- A scenario suite for the simulator (`scripts/meeting-assistant/scenarios.mjs`): twelve scripted calls, run against a fake provider at no cost or against the real provider with `--yes` and a spending cap.
 - Package 6 ends with a measured paid run: quiet during ten minutes of real conversation, answers when addressed, right speaker on each line.
 
 ## Risks
@@ -169,7 +170,7 @@ What that run does not show: the media server's own taps (the simulator stood in
 - **Cost is continuous.** About $3 per hour of meeting, whether or not anyone addresses Nova. The ceiling and the pause control bound it.
 - **Audio leaves the machine.** Every acknowledged participant's speech goes to the provider while Nova listens. The notice must say so in plain words.
 - **Typed requests on the real session.** The Live API documents no text input, so a typed mention reaches only the scripted session. Until that changes, Nova says in chat that it hears spoken requests only.
-- **A restart drops the live session.** A listening call has no session after the server restarts until someone invites again; the hold then expires on its own.
+- **A restart drops the live session.** On a graceful shutdown the server settles and pauses every call it serves. After a crash a check, at boot and then every two minutes, pauses and settles any listening record whose heartbeat is more than 90 seconds old and asks the media server to delete its taps; anyone seated can then resume.
 - **Chained reads.** Text inside a record could lead the model to ask for more reads inside the name window; package 4b caps tool calls per request.
 - **The asker's browser must be open.** If the asker leaves mid-turn, the turn expires, the model is told, and the chat says so.
 - **Shared answers.** Decision 6 makes an asker responsible for what they ask in front of others. The private-tool list must be reviewed whenever a tool is added.

@@ -1060,6 +1060,8 @@ Plan: `docs/meeting-assistant-design.md`. An assistant, shown as Nova, that a pe
 - One paid run of the real provider behind the whole server chain passed 28 checks for about $0.04: right speaker on every line, silence during chatter, an answer and an action card for the right people, 57 voice frames relayed.
 - The `meeting-assistant` journey has 32 steps. The verification chain now also prints the component-discipline count; this feature had raised it from 9 to 11 and it is back at 9.
 
+Decided during the repairs (14 November): a write asked for in a call must name its record exactly. The browser accepts a typed reference or an exact title with one match and refuses a list position or a loose name, and the card ends with the title of the record that changed. The voice dock keeps its looser matching for one person's own requests.
+
 **Second sweep, 14 November.** Four read-only audit passes at `7cde1944` found one high finding (reads about the asker alone, such as unread messages, are answered to the whole call), fifteen medium and a list of low ones; nothing that stores audio, exposes a secret or runs a write without the card. The findings, in order of repair, are in `docs/meeting-assistant-audit.md` under "Second sweep". Do not hold the real call below before the first group is repaired. A scenario suite for the paid simulator is being built to reproduce the findings against the real provider and to prove the repairs.
 
 What needs the owner:
