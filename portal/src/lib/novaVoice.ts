@@ -69,8 +69,8 @@ class NovaPlayer {
     const samples = pcm16ToFloat32(frame.pcm);
     const clock = this.context();
     const seconds = samples.length / frame.sampleRate;
-    const d = scheduleFrame({ currentTime: clock.currentTime, nextStartTime: this.nextStart, frameSeconds: seconds, utteranceStarted: this.utterance });
-    if (!d.play) { this.set({ framesIgnored: this.snap.framesIgnored + 1, lastSeq: frame.seq }); if (frame.last) this.utterance = false; return; }
+    const d = scheduleFrame({ currentTime: clock.currentTime, nextStartTime: this.nextStart, frameSeconds: seconds, utteranceStarted: this.utterance, running: this.ctx ? this.ctx.state === 'running' : true });
+    if (!d.play) { this.utterance = false; this.set({ framesIgnored: this.snap.framesIgnored + 1, lastSeq: frame.seq, needsGesture: this.ctx?.state === 'suspended' }); return; }
     this.utterance = !frame.last;
     this.nextStart = d.nextStartTime;
     if (this.ctx && samples.length > 0) {

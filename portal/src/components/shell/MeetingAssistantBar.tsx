@@ -36,6 +36,9 @@ export function NovaBarControls() {
   const words = markBase === `${ASSISTANT_NAME} is listening` && voice.speaking ? `${ASSISTANT_NAME} is speaking` : markBase;
   const voiceMenu = assistantPresent(view);
   const left = timeLeftWords(view);
+  const soundPrompt = !!words && voice.needsGesture && (voice.framesPlayed > 0 || voice.framesIgnored > 0);
+  // Someone who cannot invite, with no Nova in the call, gets no bar at all (not an empty ruled slot).
+  if (!controls.invite && !(state && controls.left) && !(words && !controls.left) && !soundPrompt && !nova.error) return null;
   return <Inline gap="xs" align="center" wrap={false} className="shrink-0 border-l border-border pl-2" data-testid="nova-bar">
     {controls.invite && <Tooltip content="Nova listens to this call and answers when asked by name" placement="top">
       <Button variant="secondary" size="sm" disabled={busy} onClick={() => void nova.invite()} data-testid="nova-invite">Invite Nova</Button>
@@ -54,7 +57,7 @@ export function NovaBarControls() {
         ...(controls.extend ? [{ label: 'Extend time', ...(left ? { description: left } : {}), icon: <PlusCircleIcon size={14} />, onSelect: () => void nova.extend() }] : []),
         ...(controls.dismiss ? [{ label: 'Dismiss Nova', icon: <CloseIcon size={14} />, danger: true, onSelect: () => void nova.dismiss() }] : []),
       ] }]} />}
-    {words && voice.needsGesture && voice.framesPlayed > 0 && <Button variant="ghost" size="sm" onClick={() => void voice.enableSound()} data-testid="nova-enable-sound">Click to hear Nova</Button>}
+    {soundPrompt && <Button variant="ghost" size="sm" onClick={() => void voice.enableSound()} data-testid="nova-enable-sound">Click to hear Nova</Button>}
     {/* The refusal sentence is read in full in a popover; the row keeps one short line. */}
     {nova.error && <>
       <Button ref={errorRef} variant="ghost" size="sm" className="max-w-[12rem] truncate text-danger" onClick={() => setErrorOpen((v) => !v)} aria-expanded={errorOpen} title={nova.error} data-testid="nova-error">{nova.error}</Button>

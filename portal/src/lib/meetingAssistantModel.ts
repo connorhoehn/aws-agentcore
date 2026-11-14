@@ -103,7 +103,7 @@ export function noticeText(v: AssistantView): { title: string; body: string } {
   const who = v.invitedByName ?? 'A participant';
   return {
     title: `${who} invited ${ASSISTANT_NAME} to listen to this call`,
-    body: `${ASSISTANT_NAME} sends what is said to a speech provider and keeps it as text for 30 days. Nothing you say is kept until you acknowledge.`,
+    body: `${ASSISTANT_NAME} sends what is said to a speech provider and keeps it as text for the retention period set by your organisation. Nothing you say is kept until you acknowledge.`,
   };
 }
 

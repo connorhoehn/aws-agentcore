@@ -37,10 +37,11 @@ test('the first frame waits for the jitter buffer; later ones follow on gaplessl
   assert.ok(next.play && next.startAt === 10.25);
 });
 
-test('a frame behind the clock starts just ahead of it, and one more than 500 ms late is dropped', () => {
+test('a frame behind the clock starts just ahead of it, and one more than 500 ms late starts a new utterance', () => {
   const behind = scheduleFrame({ currentTime: 10.3, nextStartTime: 10.2, frameSeconds: 0.1, utteranceStarted: true });
   assert.ok(behind.play && Math.abs(behind.startAt - (10.3 + SCHEDULE_LEAD_S)) < 1e-9);
   const late = scheduleFrame({ currentTime: 11, nextStartTime: 10.4, frameSeconds: 0.1, utteranceStarted: true });
-  assert.equal(late.play, false);
+  assert.ok(late.play && Math.abs(late.startAt - (11 + JITTER_BUFFER_S)) < 1e-9, 'a late frame is re-buffered, not dropped');
   assert.ok(MAX_LATE_S === 0.5);
+  assert.equal(scheduleFrame({ currentTime: 10, nextStartTime: 0, frameSeconds: 0.1, utteranceStarted: false, running: false }).play, false, 'nothing is scheduled while the context is suspended');
 });

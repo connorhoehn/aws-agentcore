@@ -49,17 +49,23 @@ export function shouldPlay(g: PlayGate): boolean {
   return g.frameCallId === g.callId && g.seq > g.lastSeq && !g.muted && g.voice && g.listening;
 }
 
-export interface ScheduleInput { currentTime: number; nextStartTime: number; frameSeconds: number; utteranceStarted: boolean }
+export interface ScheduleInput {
+  currentTime: number; nextStartTime: number; frameSeconds: number; utteranceStarted: boolean;
+  /** Whether the audio context is running; a suspended one plays nothing, and a frame is dropped rather than queued behind it. Default true. */
+  running?: boolean;
+}
 export type ScheduleDecision = { play: true; startAt: number; nextStartTime: number } | { play: false };
 
 /**
- * When a frame starts. The first of an utterance waits for the jitter buffer; later ones follow the previous
- * end so the speech is gapless; a frame that would start more than MAX_LATE_S behind the clock is dropped.
+ * When a frame starts. The first of an utterance waits for the jitter buffer; later ones follow the previous end so the
+ * speech is gapless. A frame that would start more than MAX_LATE_S behind the clock begins a new utterance (the jitter
+ * buffer again) instead of being dropped with the rest of its speech. While the context is not running a frame is dropped.
  */
 export function scheduleFrame(i: ScheduleInput): ScheduleDecision {
+  if (i.running === false) return { play: false };
   const floor = i.currentTime + SCHEDULE_LEAD_S;
-  const wanted = i.utteranceStarted ? i.nextStartTime : i.currentTime + JITTER_BUFFER_S;
-  if (i.utteranceStarted && i.currentTime - wanted > MAX_LATE_S) return { play: false };
+  const late = i.utteranceStarted && i.currentTime - i.nextStartTime > MAX_LATE_S;
+  const wanted = i.utteranceStarted && !late ? i.nextStartTime : i.currentTime + JITTER_BUFFER_S;
   const startAt = Math.max(wanted, floor);
   return { play: true, startAt, nextStartTime: startAt + i.frameSeconds };
 }
