@@ -290,12 +290,14 @@ async function main() {
     });
 
     // ── 3. The notice ──
-    await step('3: the second person sees the notice (inviter named, speech provider, 30 days, nothing kept until acknowledged); the inviter does not', async () => {
+    await step('3: the second person sees the notice (the inviter named, speech provider, the retention period set by the organisation, nothing kept until acknowledged); the inviter does not', async () => {
       await seen(nora.page, 'nova-notice');
       const text = (await nora.page.getByTestId('nova-notice').innerText()).replace(/\s+/g, ' ');
-      check(/Vera\S* .*invited Nova/.test(text) || /invited Nova/.test(text), `the notice does not name who invited: "${text}"`);
+      const inviterName = (await (await vera.api.get(`${PORTAL}/api/session/me`)).json()).name;
+      check(typeof inviterName === 'string' && inviterName.length > 0, `the inviter has no display name: ${inviterName}`);
+      check(text.includes(`${inviterName} invited Nova`), `the notice does not name the inviter "${inviterName}": "${text}"`);
       check(/speech provider/.test(text), `the notice does not say speech goes to a provider: "${text}"`);
-      check(/30 days/.test(text), `the notice does not say how long it is kept: "${text}"`);
+      check(/retention period set by your organisation/.test(text) && !/30 days/.test(text), `the notice does not say how long it is kept, or promises a fixed period: "${text}"`);
       check(/Nothing you say is kept until you acknowledge/.test(text), `the notice does not say nothing is kept before acknowledging: "${text}"`);
       check(await nora.page.getByTestId('nova-notice-acknowledge').isVisible(), 'no acknowledge control');
       check(await nora.page.getByTestId('nova-notice-secondary').isVisible(), 'no way to dismiss Nova from the notice');
@@ -468,41 +470,108 @@ async function main() {
     });
 
     // ── 9f. Two tabs, one confirm, one work item ──
-    await step('9f: the asker has a second tab open on the call: one write card confirmed once makes exactly one work item on the call\'s initiative, and the second tab\'s claim and result are refused', async () => {
+    await step('9f: the asker has a second tab with its own runner: one write card confirmed once is run by exactly one runner, makes exactly one work item on the call\'s initiative, and a second claim and a result with a wrong claim are refused', async () => {
       const tab2 = await vera.context.newPage();
       watch(tab2, `${VERA.userId}#2`);
       await tab2.goto(`${PORTAL}${INITIATIVE}`, { waitUntil: 'domcontentloaded', timeout: 40000 });
       await tab2.getByTestId('initiative-header').waitFor({ timeout: 30000 });
-      // A second tab cannot be seated in a call that is already running (its footer offers the page's huddle lobby, which is another room), so the tab
-      // is open on the call's page as a second signed-in window, and its own requests stand in for a second runner after the confirm.
+      // A second tab cannot be seated in a call that is already running, so its runner is the app's own turn code (the module the footer's
+      // runner uses: processTurns, runCallTool, pollChain) started in that tab with the same endpoints. Tab 1's turn list is held empty
+      // while the card is confirmed, so the confirmed turn is claimed and run by tab 2's runner alone.
+      const initiativeId = (await stateOf(vera)).initiativeId;
+      await tab2.evaluate(async ({ base, initiativeId, userId }) => {
+        const [turns, core, tools, palette] = await Promise.all([
+          import('/src/lib/meetingTurns.ts'), import('/src/lib/voice/runCore.ts'), import('/src/lib/voice/tools.ts'), import('/src/components/shell/portalCommands.ts'),
+        ]);
+        const log = { polls: 0, claims: [], ran: [], posted: [] };
+        const seen = new turns.SeenTurns('walk-tab2-seen'); const pending = new turns.PendingResults('walk-tab2-pending');
+        const ctx = { tenant: 'orgiq', role: 'org-leader', switchable: null, userId, userName: null, ledger: new Map(), results: new tools.ResultMemory(),
+          palette: { pages: palette.PAGES, visible: palette.isPageVisible }, can: () => true, fetch: (u, i) => fetch(u, i), navigate: () => undefined, now: () => new Date(),
+          page: () => ({ path: location.pathname, record: { ref: `initiative:${initiativeId}`, title: 'the call\'s initiative' }, rows: [] }), tabs: () => null };
+        const claim = async (turnId) => {
+          const res = await fetch(`${base}/turns/${encodeURIComponent(turnId)}/claim`, { method: 'POST', credentials: 'include', cache: 'no-store' });
+          log.claims.push({ turnId, http: res.status });
+          return res.status === 404 || res.status === 409 ? { status: 'refused' } : res.ok ? turns.parseClaim(await res.json().catch(() => null)) : { status: 'error' };
+        };
+        const post = async (turnId, body) => {
+          const res = await fetch(`${base}/turns/${encodeURIComponent(turnId)}/result`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          log.posted.push({ turnId, http: res.status }); return res.status;
+        };
+        const poll = async () => {
+          log.polls += 1;
+          const res = await fetch(`${base}/turns?mine=1`, { credentials: 'include', cache: 'no-store' });
+          if (!res.ok) return false;
+          await turns.processTurns(turns.parseTurns(await res.json().catch(() => null)), {
+            seen, pending, now: () => Date.now(), claim, post,
+            run: async (name, args, write) => { log.ran.push({ name, write }); return core.runCallTool(name, args, ctx, { write }); },
+          });
+          return true;
+        };
+        const chain = turns.pollChain({ poll, nextMs: () => 300, schedule: (fn, ms) => setTimeout(fn, ms), cancel: (h) => clearTimeout(h) });
+        chain.start();
+        window.__walkRunner = { log, stop: () => chain.stop() };
+      }, { base: `/api/calls/${encodeURIComponent(callId)}/assistant`, initiativeId, userId: VERA.userId });
       const title = 'two tab audit trail';
       const sentBefore = results_.length;
-      await inject(VERA.userId, `Nova, create a work item for the ${title}.`);
-      const card = await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.tool?.name === 'create' && m.metadata.summary.includes(title)), 20000, 'the action card');
-      const cardOnTab1 = vera.page.getByTestId('assistant-action-card').filter({ hasText: title }).last();
-      await cardOnTab1.waitFor({ timeout: 20000 });
-      await cardOnTab1.getByTestId('assistant-action-confirm').click(); // confirmed once
-      await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.actionId === card.metadata.actionId && m.metadata.status === 'done'), 25000, 'the card going to done');
-      await sleep(6000); // long enough for both tabs to have polled again
+      const holdTab1 = /\/assistant\/turns\?mine=1/;
+      await vera.page.route(holdTab1, (route) => route.fulfill({ json: { turns: [] } }));
+      try {
+        await inject(VERA.userId, `Nova, create a work item for the ${title}.`);
+        const card = await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.tool?.name === 'create' && m.metadata.summary.includes(title)), 20000, 'the action card');
+        const cardOnTab1 = vera.page.getByTestId('assistant-action-card').filter({ hasText: title }).last();
+        await cardOnTab1.waitFor({ timeout: 20000 });
+        await cardOnTab1.getByTestId('assistant-action-confirm').click(); // confirmed once
+        await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.actionId === card.metadata.actionId && m.metadata.status === 'done'), 25000, 'the card going to done');
+      } finally { await vera.page.unroute(holdTab1); }
+      await sleep(6000); // long enough for tab 1 to have polled again, with its list back
       const made = await itemsTitled(vera, title);
       check(made.length === 1, `${made.length} work items titled "${title}" exist after one confirm`);
-      check(made[0].projectId === (await stateOf(vera)).initiativeId, `the item is on ${made[0].projectId}, not the call's initiative`);
+      check(made[0].projectId === initiativeId, `the item is on ${made[0].projectId}, not the call's initiative`);
       const mine = results_.slice(sentBefore).filter((r) => r.ok && r.http === 200);
       check(mine.length === 1, `the browsers posted ${mine.length} accepted results for one turn: ${JSON.stringify(mine)}`);
-      // The second tab's runner would claim the same turn: the server refuses a second claim, and a result without the claim.
+      check(mine[0].by === `${VERA.userId}#2`, `the accepted result came from ${mine[0].by}, not the second tab's runner`);
+      const log = await tab2.evaluate(() => window.__walkRunner.log);
+      check(log.polls >= 3, `the second tab's runner polled ${log.polls} times`);
+      check(log.ran.length === 1 && log.ran[0].write === true, `the second tab's runner ran ${JSON.stringify(log.ran)}, not one write`);
+      check(log.claims.length >= 1 && log.claims[0].http === 200, `the second tab's claim answered ${JSON.stringify(log.claims)}`);
+      // Another claim of the same turn, and a result without its claim, are refused by the server.
       const turnId = mine[0].turnId;
       const url = `/api/calls/${encodeURIComponent(callId)}/assistant/turns/${encodeURIComponent(turnId)}`;
-      const again = await tab2.evaluate(async (u) => {
+      const again = await vera.page.evaluate(async (u) => {
         const claim = await fetch(`${u}/claim`, { method: 'POST', credentials: 'include' });
         const result = await fetch(`${u}/result`, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ claimId: 'abcdef0123456789abcdef01', ok: true, output: {} }) });
         return { claim: claim.status, result: result.status };
       }, url);
-      check(again.claim === 409, `a second claim from the other tab answered ${again.claim}, not 409`);
-      check(again.result === 409, `a result with a wrong claim from the other tab answered ${again.result}, not 409`);
+      check(again.claim === 409, `a second claim answered ${again.claim}, not 409`);
+      check(again.result === 409, `a result with a wrong claim answered ${again.result}, not 409`);
       check((await itemsTitled(vera, title)).length === 1, 'the second claim or result made another work item');
+      await tab2.evaluate(() => window.__walkRunner.stop());
       await shot(tab2, '9f-two-tabs-card-done');
       await tab2.close();
-      return `one item on ${made[0].projectId}; one accepted result; a second tab's claim 409 and its result with a wrong claim 409`;
+      return `one item on ${made[0].projectId}; the second tab's runner ran it once (${log.polls} polls); a second claim 409 and a result with a wrong claim 409`;
+    });
+
+    // ── 9g. A write whose record is not named exactly fails on its card, and nothing changes ──
+    await step('9g: a card for a write that names its record by position is confirmed, the runner refuses it ("Say the record\'s full name."), and the card reads Failed for both', async () => {
+      await inject(VERA.userId, 'Nova, I need a hand with something else.');
+      await sleep(1500);
+      const before = (await itemsTitled(vera, 'login cookie bug'))[0];
+      const res = await fetch(`${MIDDLEWARE}/api/dev/calls/${encodeURIComponent(callId)}/assistant-tool-call`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ askedBy: VERA.userId, name: 'update', args: { ref: '1', fields: { status: 'cancelled' } } }),
+      });
+      check(res.status === 202, `the dev tool call answered ${res.status}`);
+      const card = await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.tool?.name === 'update' && m.metadata.status === 'waiting'), 20000, 'the update card');
+      const veraCard = vera.page.getByTestId('assistant-action-card').filter({ hasText: card.metadata.summary }).last();
+      await veraCard.waitFor({ timeout: 20000 });
+      await veraCard.getByTestId('assistant-action-confirm').click();
+      const failed = await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.actionId === card.metadata.actionId && m.metadata.status === 'failed'), 25000, 'the card going to failed');
+      check(/full name/i.test(failed.metadata.resultText ?? ''), `the failed card says "${failed.metadata.resultText}", not the exact-name sentence`);
+      await waitFor(async () => /Failed/.test(await nora.page.getByTestId('assistant-action-card').filter({ hasText: card.metadata.summary }).last().getByTestId('assistant-action-status').innerText().catch(() => '')), 15000, 'the other person seeing Failed');
+      const after = (await itemsTitled(vera, 'login cookie bug'))[0];
+      check(before && after && before.id === after.id, 'the work item is gone or changed');
+      check((await myTurns(vera)).length === 0, 'a turn is still waiting');
+      await shot(vera.page, '9g-card-failed');
+      return `failed for both: "${failed.metadata.resultText}"`;
     });
 
     // ── 10. A tool call with no name in the asker's recent words is refused ──
@@ -691,6 +760,15 @@ async function main() {
     });
 
     // ── 6. Dismiss ──
+    let expiryCard = null;
+    await step('6a: a write card nobody confirms stays waiting for both people', async () => {
+      await inject(VERA.userId, 'Nova, create a work item for the expiry audit.');
+      expiryCard = await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.tool?.name === 'create' && m.metadata.summary.includes('expiry audit')), 20000, 'the card');
+      check(expiryCard.metadata.status === 'waiting', `the card is ${expiryCard.metadata.status}`);
+      for (const p of [vera, nora]) await p.page.getByTestId('assistant-action-card').filter({ hasText: 'expiry audit' }).last().waitFor({ timeout: 20000 });
+      return 'waiting for both';
+    });
+
     await step('6: dismiss: the mark goes, Invite does not return, the bar says "Nova has left this call", re-invite is refused', async () => {
       await novaMenu(nora, 'Dismiss Nova');
       await seen(nora.page, 'nova-left');
@@ -707,6 +785,19 @@ async function main() {
       await barFits(vera.page, 'the bar after dismissal', 1280);
       await shot(vera.page, '6-left');
       return 'left; re-invite 409';
+    });
+
+    await step('6b: with Nova dismissed the unconfirmed card reads Expired for both, says nobody confirmed it in time, and nothing was created', async () => {
+      const expired = await waitFor(async () => (await novaOf(vera, 'assistant-action')).find((m) => m.metadata.actionId === expiryCard.metadata.actionId && m.metadata.status === 'expired'), 20000, 'the card going to expired');
+      check(/did not confirm this in time/.test(expired.metadata.resultText ?? ''), `the expired card says "${expired.metadata.resultText}"`);
+      for (const p of [vera, nora]) {
+        const card = p.page.getByTestId('assistant-action-card').filter({ hasText: 'expiry audit' }).last();
+        await waitFor(async () => /Expired/.test(await card.getByTestId('assistant-action-status').innerText().catch(() => '')), 15000, `${p.who.userId} seeing Expired`);
+        check(await card.getByTestId('assistant-action-confirm').count() === 0, `${p.who.userId} still has Confirm on an expired card`);
+      }
+      check((await itemsTitled(vera, 'expiry audit')).length === 0, 'an expired card created the work item');
+      await shot(vera.page, '6b-card-expired');
+      return `expired for both: "${expired.metadata.resultText}"`;
     });
 
     // ── 11. The inviter's spend ──
@@ -744,21 +835,34 @@ async function main() {
     };
     let layla;
 
-    await step('12: after the dismissal Nova leaves one message in the call chat: the summary, the decision and action item counts, and a link to the meeting page', async () => {
+    await step('12: after the dismissal Nova leaves one message in the call chat: the summary and the decision and action item counts, no path in its sentence, and a link element "Open the meeting page" that goes to the meeting page', async () => {
       const msg = await waitFor(async () => (await chatMessages(vera)).find((m) => /Nova's minutes/.test(m.message ?? '')), 20000, 'the minutes message in the call chat');
       check(msg.userId === 'agent:nova' || msg.metadata?.assistant === true, 'the minutes message is not Nova\'s');
       check(/\d+ decisions? and \d+ action items?/.test(msg.message), `no counts in "${msg.message}"`);
-      check(msg.message.includes(`/iq/meetings/${callId}`), `no link to the meeting page in "${msg.message}"`);
+      check(!msg.message.includes('/iq/meetings'), `the sentence still carries a path: "${msg.message}"`);
+      check(msg.metadata?.meetingCallId === callId, `the message carries meetingCallId ${msg.metadata?.meetingCallId}, not ${callId}`);
       check(/ said: /.test(msg.message), `no summary in "${msg.message}"`);
       const all = (await chatMessages(vera)).filter((m) => /Nova's minutes/.test(m.message ?? ''));
       check(all.length === 1, `${all.length} minutes messages were posted`);
-      return `"${msg.message.slice(0, 220)}"`;
+      const expected = `/iq/meetings/${encodeURIComponent(callId)}`;
+      const link = vera.page.getByTestId('assistant-notice-meeting-link').last();
+      await link.waitFor({ state: 'visible', timeout: 20000 }).catch(() => { throw new StepFailure('the chat shows no meeting link under the closing notice'); });
+      check(await link.evaluate((el) => el.tagName) === 'A', 'the meeting link is not an anchor');
+      check((await link.getAttribute('href')) === expected, `the link goes to ${await link.getAttribute('href')}, not ${expected}`);
+      check(/^Open the meeting page$/.test((await link.innerText()).trim()), `the link reads "${await link.innerText()}"`);
+      check(await vera.page.getByTestId('assistant-notice-meeting-link').count() === 1, 'more than one meeting link in the chat');
+      await link.click();
+      await vera.page.waitForURL((u) => u.pathname === expected, { timeout: 20000 }).catch(() => { throw new StepFailure(`clicking the link did not open ${expected}: ${vera.page.url()}`); });
+      await seen(vera.page, 'meeting-page', 30000);
+      await vera.page.goBack({ waitUntil: 'domcontentloaded' });
+      await vera.page.getByTestId('shell-footer-row').waitFor({ timeout: 30000 });
+      return `"${msg.message.slice(0, 200)}"; link ${expected}`;
     });
 
     // The minutes steps read in a fresh tab of each person, so the first tabs stay in the call until step 18.
     const veraM = { page: await vera.context.newPage() }; const noraM = { page: await nora.context.newPage() };
     watch(veraM.page, 'vera#m'); watch(noraM.page, 'nora#m');
-    await step('13: the meeting page renders for an attendee at 1440 and 1280 with the summary, an action item and the transcript with speaker names', async () => {
+    await step('13: the meeting page renders for an attendee at 1440 and 1280 with the summary, the action item for the work item made in the call (by its title) and the transcript with speaker names', async () => {
       await veraM.page.goto(MEETING(), { waitUntil: 'domcontentloaded', timeout: 40000 });
       await seen(veraM.page, 'meeting-page', 30000);
       await seen(veraM.page, 'meeting-summary');
@@ -772,7 +876,8 @@ async function main() {
         const summary = (await veraM.page.getByTestId('meeting-summary').innerText()).trim();
         check(summary.length > 10, 'the summary is empty');
         const items = (await veraM.page.getByTestId('meeting-action-items').innerText()).replace(/\s+/g, ' ');
-        check(/work item/i.test(items), `the action items do not hold the work item created in the call: "${items}"`);
+        check(/login cookie bug/i.test(items), `the action items do not hold the work item created in the call (by its title): "${items}"`);
+        check((await itemsTitled(vera, 'login cookie bug')).length === 1, 'the work item the action item names does not exist exactly once');
         // Speaker names, not ids: the transcript lines were injected for u-nora and u-vera.
         check(/Nora/.test(text), 'Nora is not named in the transcript');
         check(!/\bu-nora\b|\bu-vera\b/.test(text), 'a raw user id shows on the page');
@@ -800,10 +905,13 @@ async function main() {
       return 'API 404 x2; "Meeting not found" page';
     });
 
-    await step('15: the Meetings list shows the meeting to an attendee, table first, and not to the outsider', async () => {
+    await step('15: the Meetings list shows the meeting to an attendee (the row found by its own title), table first, and not to the outsider', async () => {
       await veraM.page.goto(`${PORTAL}/iq/meetings`, { waitUntil: 'domcontentloaded', timeout: 40000 });
       await seen(veraM.page, 'iq-meetings-table', 30000);
-      const row = veraM.page.getByTestId('iq-meetings-table').getByText(/call/i).first();
+      const listed = await (await vera.api.get(`${PORTAL}/api/meetings`)).json();
+      const own = listed.meetings.find((m) => m.callId === callId);
+      check(own && typeof own.callName === 'string' && own.callName.length > 0, `the API list has no title for this call: ${JSON.stringify(listed).slice(0, 200)}`);
+      const row = veraM.page.getByTestId('iq-meetings-table').getByText(own.callName, { exact: true }).first();
       await row.waitFor({ state: 'visible', timeout: 15000 }).catch(() => { throw new StepFailure('the meeting is not in the list'); });
       for (const width of [1440, 1280]) {
         await fitsWidth(veraM.page, 'the Meetings list', width);
@@ -855,6 +963,20 @@ async function main() {
       const list = await (await vera.api.get(`${PORTAL}/api/meetings`)).json();
       check(!list.meetings.some((m) => m.callId === callId), 'the deleted meeting is still listed');
       return 'non-inviter: no button, 403; inviter: confirm, then 404 on the page and both routes, gone from the list';
+    });
+    await step('17b: after the delete every message Nova left in the call chat is the one fixed line: no words of the meeting, no card detail, no link to the page', async () => {
+      const nova = (await chatMessages(vera)).filter((m) => m.userId === 'agent:nova' || m.metadata?.assistant === true);
+      check(nova.length >= 3, `only ${nova.length} Nova messages remain in the chat`);
+      const lines = new Set(nova.map((m) => m.message));
+      check(lines.size === 1, `Nova's messages read ${JSON.stringify([...lines]).slice(0, 300)}, not one fixed line`);
+      const blob = JSON.stringify(nova);
+      for (const word of ['login cookie bug', 'two tab audit', 'expiry audit', 'nightly export', 'meetingCallId']) check(!blob.toLowerCase().includes(word.toLowerCase()), `"${word}" is still in Nova's messages`);
+      for (const card of nova.filter((m) => m.metadata?.kind === 'assistant-action')) {
+        check(card.metadata.detail === undefined && card.metadata.resultText === undefined, 'a card kept its detail or result');
+      }
+      await sleep(3500); // the page's own refresh
+      check(await vera.page.getByTestId('assistant-notice-meeting-link').count() === 0, 'the chat still shows a link to the deleted meeting page');
+      return `${nova.length} messages, all "${[...lines][0]}"`;
     });
     // ── 18. Both people leave; the footer renders on; no page error in the whole walk ──
     await step('18: both people leave the call: the footer still renders with the call gone, and no page error happened in the whole walk', async () => {
