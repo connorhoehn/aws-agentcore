@@ -54,7 +54,7 @@ test('the notice shows only to someone who owes an acknowledgement while Nova is
 test('the notice names the inviter and says where speech goes, for how long, and what is kept before agreeing', () => {
   const n = noticeText(view('listening', { youMustAck: true }));
   assert.match(n.title, /Vera Lindqvist invited Nova/);
-  assert.match(n.body, /speech provider/); assert.match(n.body, /30 days/); assert.match(n.body, /Nothing you say is kept until you acknowledge/);
+  assert.match(n.body, /speech provider/); assert.match(n.body, /retention period set by your organisation/); assert.doesNotMatch(n.body, /30 days/); assert.match(n.body, /Nothing you say is kept until you acknowledge/);
   assert.match(noticeText(view('listening', { invitedByName: null })).title, /^A participant invited Nova/);
 });
 
