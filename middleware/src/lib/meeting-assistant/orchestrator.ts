@@ -183,6 +183,15 @@ interface CallRun {
   finished: boolean;
 }
 
+/** Why a read waiting on its asker's browser was ended: its time ran out, or Nova was paused, replaced or stopped under it. */
+type ExpiryCause = 'timeout' | 'paused' | 'replaced' | 'stopped';
+const EXPIRY_WORDS: Readonly<Record<ExpiryCause, { model: string; chat: (name: string) => string }>> = {
+  timeout: { model: 'the person who asked is not available', chat: (n) => `${n} is not available to run that, so I could not finish it.` },
+  paused: { model: 'Nova was paused', chat: (n) => `Nova was paused before it could finish ${n}'s request. Ask again once it is listening.` },
+  replaced: { model: 'Nova\'s session was restarted', chat: (n) => `Nova's session was restarted before it could finish ${n}'s request. Ask again.` },
+  stopped: { model: 'Nova has left the call', chat: (n) => `Nova left the call before it could finish ${n}'s request.` },
+};
+
 /** What a private read posts when the asker's browser sent no sentence of its own. */
 export const PRIVATE_FALLBACK = 'Your answer is ready; open the page to see it.';
 export const PRIVATE_SAY_MAX = 600;
@@ -335,7 +344,7 @@ export class AssistantRuntime {
     };
     try {
       await guarded(() => this.serial(run, async () => { await this.closeSession(run, 'stop'); }));
-      await guarded(() => this.expireOpenTurns(run, false));
+      await guarded(() => this.expireOpenTurns(run, false, 'stopped'));
       await guarded(() => this.closeListening(callId));
     } finally {
       this.deps.audio?.detach(callId);
@@ -430,7 +439,7 @@ export class AssistantRuntime {
     this.foldUsage(run);
     for (const off of run.unsubscribers.splice(0)) off();
     // A read waiting on its asker has no session to answer now; a write behind its card does not need one.
-    if (why === 'pause') await this.expireOpenTurns(run, true);
+    if (why === 'pause') await this.expireOpenTurns(run, true, 'paused');
   }
 
   private foldUsage(run: CallRun): void {
@@ -476,7 +485,7 @@ export class AssistantRuntime {
     this.deps.audio?.suspend(run.ctx.callId); // the tap stays, its audio waits for the new session (and its time base)
     this.foldUsage(run);
     for (const off of run.unsubscribers.splice(0)) off();
-    await this.expireOpenTurns(run, true);
+    await this.expireOpenTurns(run, true, 'replaced');
     await this.reopen(run, reason, true);
   }
 
@@ -530,7 +539,7 @@ export class AssistantRuntime {
       try { await session.close(); } catch (e) { console.warn('[meeting-assistant] session close failed', (e as Error).message); }
       this.foldUsage(run);
       for (const off of run.unsubscribers.splice(0)) off();
-      await this.expireOpenTurns(run, true);
+      await this.expireOpenTurns(run, true, 'replaced');
     });
     if (closed && !run.finished) await this.reopen(run, 'planned replacement before the provider expiry', false);
   }
@@ -674,7 +683,8 @@ export class AssistantRuntime {
    * else a plain answer for whoever addressed Nova.
    */
   private async onOutput(run: CallRun, e: SessionEvents['outputTranscript']): Promise<void> {
-    if (!e.final || !e.text.trim() || run.finished) return;
+    // A pause closes the session on purpose: the half sentence its close flushes is not an answer to anyone.
+    if (!e.final || !e.text.trim() || run.finished || run.intentionalClose) return;
     const t = e.startedAt !== undefined ? run.sessionStartedAt + e.startedAt : this.now();
     const tEnd = e.endedAt !== undefined ? run.sessionStartedAt + e.endedAt : t;
     let asker: string | null;
@@ -1064,9 +1074,9 @@ export class AssistantRuntime {
     return { ok: true, ceilingSeconds: next, addedSeconds: added };
   }
 
-  private async expireOpenTurns(run: CallRun, readsOnly: boolean): Promise<void> {
+  private async expireOpenTurns(run: CallRun, readsOnly: boolean, cause: ExpiryCause): Promise<void> {
     for (const t of await this.store.listTurns(run.ctx.callId, { statuses: ['pending', 'running'] })) {
-      if (!readsOnly || t.kind !== 'write') await this.expireTurn(run, t);
+      if (!readsOnly || t.kind !== 'write') await this.expireTurn(run, t, cause);
     }
   }
 
@@ -1074,7 +1084,7 @@ export class AssistantRuntime {
    * Expire one turn and update its card. `run` is the call's live run, or null when there is none (Nova has left, or the server
    * restarted): the card is still settled, there is just no session to tell and no model call to answer (audit M9).
    */
-  private async expireTurn(run: CallRun | null, turn: AssistantTurn): Promise<void> {
+  private async expireTurn(run: CallRun | null, turn: AssistantTurn, cause: ExpiryCause = 'timeout'): Promise<void> {
     const callId = turn.callId;
     const moved = await this.store.moveTurn(callId, turn.turnId, { from: ['pending', 'running'], to: 'expired' });
     if (!moved) return;
@@ -1093,8 +1103,9 @@ export class AssistantRuntime {
     if (!run) return;
     const modelCallId = run.turnCalls.get(turn.turnId);
     run.turnCalls.delete(turn.turnId);
-    if (modelCallId) this.answer(run, modelCallId, { error: 'the person who asked is not available' });
-    await postReply(callId, { text: `${askerName} is not available to run that, so I could not finish it.`, askedBy: turn.askedBy, askedByName: askerName }).catch(() => null);
+    const why = EXPIRY_WORDS[cause];
+    if (modelCallId) this.answer(run, modelCallId, { error: why.model });
+    await postReply(callId, { text: why.chat(askerName), askedBy: turn.askedBy, askedByName: askerName }).catch(() => null);
   }
 
   // -------------------------------------------------------------------------------------------------------------

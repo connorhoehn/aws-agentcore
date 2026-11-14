@@ -951,6 +951,29 @@ describe('the tick guards each run', () => {
   });
 });
 
+describe('a pause says what it did', () => {
+  it('a read cut short by a pause says in the chat that Nova was paused', async () => {
+    const s = await realRuntime();
+    await line(BOB, 'Nova, find the runbooks.', now - 2000);
+    s.call('call_x', 'search', { query: 'runbooks' }); await flush();
+    await runtime.pause(CALL);
+    expect(mockPosts.replies.at(-1)!.text).toMatch(/Nova was paused before it could finish Bob's request/);
+    expect(mockPosts.replies.map((r) => r.text).join(' ')).not.toMatch(/not available/);
+  });
+
+  it('the half sentence in flight when a pause closes the session is not posted', async () => {
+    class Flushing extends FakeSession { async close() { this.say('The cookie fix is'); await super.close(); } }
+    await runtime.stop(CALL);
+    factory = () => { const x = new Flushing(); sessions.push(x); return x; };
+    runtime = new AssistantRuntime({ store: () => store, intake: () => intake, clock: () => now, makeSession: () => factory(), rolesOf: async (u) => roles[u] ?? [] }, { tickMs: 0 });
+    await store.patchSession(CALL, {}).catch(() => undefined);
+    await runtime.start(ctx);
+    await line(BOB, 'Nova, how is the cookie fix?', now - 1000);
+    await runtime.pause(CALL); await flush();
+    expect(mockPosts.replies).toEqual([]);
+  });
+});
+
 describe('a failed replacement retries, then leaves (B9)', () => {
   class FailingStart extends FakeSession { async start(): Promise<void> { throw new Error('provider unavailable'); } }
   const withWaits = async () => {
