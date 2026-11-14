@@ -462,7 +462,7 @@ export class AssistantRuntime {
       session.on('expires', (e) => { run.expiresAt = e.atMs; }),
       session.on('closed', guard((e: SessionEvents['closed']) => this.onClosed(run, session, e.reason))),
       session.on('error', (e) => {
-        console.warn('[meeting-assistant] session error', e.message);
+        console.warn('[meeting-assistant] session error', e.info?.code ?? e.message);
         run.providerErrorCount += 1;
         if (e.info) { run.providerErrors.push(e.info); if (run.providerErrors.length > MAX_PROVIDER_ERRORS) run.providerErrors.shift(); }
       }),

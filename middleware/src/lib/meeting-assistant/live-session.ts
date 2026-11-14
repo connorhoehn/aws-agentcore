@@ -250,7 +250,8 @@ export class OpenAiLiveSession extends SessionEmitter implements LiveMeetingSess
       }
       case 'error': {
         const code = (ev['code'] ?? (ev['error'] as { code?: unknown } | undefined)?.code);
-        const message = `${typeof code === 'string' ? code : 'error'}: ${typeof ev['message'] === 'string' ? ev['message'].slice(0, 200) : ''}`;
+        // The provider's message text can echo what was said in the call: only a code-shaped value is ever kept or logged.
+        const message = shortCode(code) ?? 'error';
         const err = ev['error'] as { code?: unknown; param?: unknown; type?: unknown } | undefined;
         const info: ProviderErrorInfo = { code: shortCode(code), param: shortCode(ev['param'] ?? err?.param), type: shortCode(err?.type) };
         this.providerErrors.push(info);

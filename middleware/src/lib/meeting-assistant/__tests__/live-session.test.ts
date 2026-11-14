@@ -345,14 +345,13 @@ describe('usage and close', () => {
     expect(JSON.stringify(s.providerErrors)).not.toMatch(/secret/);
     await s.close();
   });
-  it('surfaces a provider error after start as an event with a code and a capped message', async () => {
+  it('surfaces a provider error after start as an event carrying the code and never the provider\'s message text', async () => {
     const { s, seen } = make();
     await s.start(START);
     frame({ type: 'error', code: 'rate_limited', message: 'x'.repeat(500) });
     await tick();
     expect(seen.error).toHaveLength(1);
-    expect(seen.error[0]!.message.startsWith('rate_limited: ')).toBe(true);
-    expect(seen.error[0]!.message.length).toBeLessThan(230);
+    expect(seen.error[0]!.message).toBe('rate_limited');
     await s.close();
   });
 });
