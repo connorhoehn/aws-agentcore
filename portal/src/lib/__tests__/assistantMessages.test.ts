@@ -64,3 +64,19 @@ test('the decision posts to the call\'s route and names the refusal when it is r
   const bare = (async () => new Response('', { status: 500 })) as unknown as typeof fetch;
   await assert.rejects(decideAssistantAction('call-1', 'act-1', 'decline', bare), /could not be saved \(500\)/);
 });
+
+test('S16: a closing notice carries its meeting in metadata, and only a well-formed id', async () => {
+  const { readAssistantMessage } = await import('../assistantMessages.ts');
+  assert.deepEqual(readAssistantMessage({ assistant: true, kind: 'assistant-notice', meetingCallId: 'c-1' }), { kind: 'assistant-notice', meetingCallId: 'c-1' });
+  assert.deepEqual(readAssistantMessage({ assistant: true, kind: 'assistant-notice' }), { kind: 'assistant-notice' });
+  assert.deepEqual(readAssistantMessage({ assistant: true, kind: 'assistant-notice', meetingCallId: 7 }), { kind: 'assistant-notice' });
+});
+
+test('the card names the call initiative only for a new work item that names none', async () => {
+  const { namesNoInitiative } = await import('../assistantMessages.ts');
+  const tool = { name: 'create', argsDigest: '' };
+  assert.equal(namesNoInitiative({ tool, detail: ['kind: work-item', 'title: Fix it'] }), true);
+  assert.equal(namesNoInitiative({ tool, detail: ['kind: work-item', 'title: Fix it', 'initiative: Atlas'] }), false);
+  assert.equal(namesNoInitiative({ tool, detail: ['kind: initiative', 'name: Atlas'] }), false);
+  assert.equal(namesNoInitiative({ tool: { name: 'update', argsDigest: '' }, detail: ['kind: work-item'] }), false);
+});

@@ -210,9 +210,10 @@ async function writeMinutesOnce(callId: string): Promise<MinutesRecord | null> {
 
   const words = `${stored.minutes.decisions.length} ${stored.minutes.decisions.length === 1 ? 'decision' : 'decisions'} and ${stored.minutes.actionItems.length} ${stored.minutes.actionItems.length === 1 ? 'action item' : 'action items'}`;
   const head = draft ? chatSummary(stored.minutes.summary) : stored.minutes.summary;
-  await postNoticeQuietly(callId, (draft
-    ? `${NOVA_NAME}'s minutes: ${head} ${words}. Open them at ${meetingPagePath(callId)}.`
-    : `${head} The record is at ${meetingPagePath(callId)}.`).replace(/\s+/g, ' '), { minutes: true });
+  // The page is a metadata field the chat renders as a link; the sentence carries no path.
+  const sentence = (draft ? `${NOVA_NAME}'s minutes: ${head} ${words}.` : head).replace(/\s+/g, ' ');
+  await postAsAssistant(callId, { text: sentence, metadata: { assistant: true, displayName: NOVA_NAME, kind: 'assistant-notice', meetingCallId: callId } }, { minutes: true })
+    .catch((error: unknown) => console.warn('[meeting-assistant] notice not posted', (error as Error).message));
   if (draft) await offerCards(record, stored.minutes, initiativeName).catch((e: unknown) => console.warn('[meeting-assistant] action cards not offered', (e as Error).message));
   return stored.minutes;
 }

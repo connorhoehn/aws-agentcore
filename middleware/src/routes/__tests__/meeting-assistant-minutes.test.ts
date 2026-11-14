@@ -53,7 +53,7 @@ const get = (path: string, user = 'alice') => request(app).get(url(path)).set('x
 const del = (path: string, user = 'alice') => request(app).delete(url(path)).set('x-user', user);
 const meetings = (user: string, q = '') => request(app).get(`/api/meetings${q}`).set('x-user', user);
 const inject = (body: object | object[]) => request(app).post(`/api/dev/calls/${CALL}/transcript-lines`).send(body);
-const chat = async () => (await chatStore.listMessages(callChatChannel(CALL), 100)).map((m) => ({ text: m.message, kind: (m.metadata as { kind?: string } | undefined)?.kind }));
+const chat = async () => (await chatStore.listMessages(callChatChannel(CALL), 100)).map((m) => ({ text: m.message, kind: (m.metadata as { kind?: string } | undefined)?.kind, meetingCallId: (m.metadata as { meetingCallId?: string } | undefined)?.meetingCallId }));
 
 async function holdCall(lobby = LOBBY): Promise<void> {
   const observed = observeCallPageLifecycle(calls, () => null, () => runtime);
@@ -104,7 +104,9 @@ describe('writing the minutes', () => {
     const leaving = (await chat()).filter((c) => c.text.includes("Nova's minutes"));
     expect(leaving).toHaveLength(1);
     expect(leaving[0]!.text).toContain('1 decision and 2 action items');
-    expect(leaving[0]!.text).toContain(`/iq/meetings/${CALL}`);
+    // The page is a metadata field the portal links from, never a path in the sentence.
+    expect(leaving[0]!.text).not.toContain('/iq/meetings');
+    expect(leaving[0]!.meetingCallId).toBe(CALL);
     // A second finish (the call ending after the dismissal) writes nothing more.
     await runtime.finish(CALL); await minutesIdle();
     expect((await chat()).filter((c) => c.text.includes("Nova's minutes"))).toHaveLength(1);

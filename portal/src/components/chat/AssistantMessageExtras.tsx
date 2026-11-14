@@ -9,10 +9,12 @@
 // Library components only.
 
 import { useState, type ReactNode } from 'react';
-import { Button, Card, Inline, InlineAlert, Stack, StatusPill, T } from '@connorhoehn/ui-components/shared';
+import { useNavigate } from 'react-router';
+import { Button, Card, Inline, InlineAlert, Link, Stack, StatusPill, T } from '@connorhoehn/ui-components/shared';
 import { useFetch } from '../../hooks/useFetch';
+import { meetingHref } from '../../pages/meetings/meetingsModel';
 import { useMeetingAssistant } from '../../lib/meetingAssistant';
-import { actionCardView, askedByLine, decideAssistantAction, readAssistantMessage, type ActionDecision, type AssistantAction } from '../../lib/assistantMessages';
+import { actionCardView, askedByLine, namesNoInitiative, decideAssistantAction, readAssistantMessage, type ActionDecision, type AssistantAction } from '../../lib/assistantMessages';
 
 export interface AssistantActionCardProps {
   action: AssistantAction;
@@ -51,7 +53,7 @@ export function AssistantActionCard({ action, viewerId, callId, decide = decideA
             {action.detail.map((line, index) => <T key={index} size="xs" tone="secondary" wrap>{line}</T>)}
           </Stack>
         )}
-        {action.tool.name === 'create' && <CallInitiativeLine callId={callId} />}
+        {namesNoInitiative(action) && <CallInitiativeLine callId={callId} />}
         <Inline gap="sm" align="center" wrap>
           <StatusPill tone={view.tone} label={view.statusLabel} size="sm" data-testid="assistant-action-status" />
           {view.waitingNote && <T size="xs" tone="tertiary" data-testid="assistant-action-waiting-note">{view.waitingNote}</T>}
@@ -87,10 +89,29 @@ export function AssistantMessageExtras({ metadata }: Pick<AssistantMessageExtras
   return <T size="xs" tone="tertiary" data-testid="assistant-reply-asked-by">{askedByLine(message)}</T>;
 }
 
-/** A Nova notice as a system line (the message's own sentence); null for any other message, so the thread draws it as usual. */
+/**
+ * A closing notice names its meeting in the message's metadata, never in its text: the link under the sentence is built
+ * from that field (the portal's own meeting path), so nothing in the chat becomes a link because of what a message says.
+ */
+function NoticeLine({ content, callId }: { content: string; callId: string | undefined }) {
+  const navigate = useNavigate();
+  const href = callId ? meetingHref(callId) : null;
+  return (
+    <Stack gap="xs">
+      <T size="xs" tone="secondary" wrap data-testid="assistant-notice-line">{content}</T>
+      {href && (
+        <Link href={href} data-testid="assistant-notice-meeting-link" onClick={(e) => { if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); navigate(href); } }}>
+          Open the meeting page
+        </Link>
+      )}
+    </Stack>
+  );
+}
+
+/** A Nova notice as a system line (the message's own sentence, and the meeting link when it carries one); null for any other message, so the thread draws it as usual. */
 export function assistantSystemLine(message: { content: string; metadata?: Record<string, unknown> }): ReactNode | null {
-  return readAssistantMessage(message.metadata)?.kind === 'assistant-notice'
-    ? <T size="xs" tone="secondary" wrap data-testid="assistant-notice-line">{message.content}</T> : null;
+  const read = readAssistantMessage(message.metadata);
+  return read?.kind === 'assistant-notice' ? <NoticeLine content={message.content} callId={read.meetingCallId} /> : null;
 }
 
 /** The action card standing in for the bubble's text; null for any other message. */

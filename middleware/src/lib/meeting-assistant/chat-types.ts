@@ -22,7 +22,11 @@ export const ACTION_STATUSES: readonly AssistantActionStatus[] = ['waiting', 'co
 /** Fields every Nova message carries. */
 export interface AssistantBase { assistant: true; displayName: typeof NOVA_NAME }
 
-export interface AssistantNoticeMetadata extends AssistantBase { kind: 'assistant-notice' }
+export interface AssistantNoticeMetadata extends AssistantBase {
+  kind: 'assistant-notice';
+  /** The closing notice names the meeting it is about; the portal links to that meeting's page from it. */
+  meetingCallId?: string;
+}
 
 export interface AssistantReplyMetadata extends AssistantBase {
   kind: 'assistant-reply';
@@ -66,7 +70,7 @@ export function parseAssistantMetadata(raw: unknown): AssistantMetadata | null {
   const m = raw as Record<string, unknown>;
   if (m['assistant'] !== true) return null;
   const base = { assistant: true as const, displayName: NOVA_NAME };
-  if (m['kind'] === 'assistant-notice') return { ...base, kind: 'assistant-notice' };
+  if (m['kind'] === 'assistant-notice') return { ...base, kind: 'assistant-notice', ...(str(m['meetingCallId'], 200) ? { meetingCallId: m['meetingCallId'] } : {}) };
   if (m['kind'] === 'assistant-reply') {
     if (!str(m['askedBy'], 128) || !str(m['askedByName'], 128)) return null;
     return { ...base, kind: 'assistant-reply', askedBy: m['askedBy'], askedByName: m['askedByName'], ...(m['private'] === false ? { private: false as const } : {}) };

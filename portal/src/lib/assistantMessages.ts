@@ -10,7 +10,7 @@ import { pokeTurns } from './meetingTurnsPoke.ts';
 export type AssistantActionStatus = 'waiting' | 'confirmed' | 'declined' | 'expired' | 'done' | 'failed';
 const STATUSES: readonly AssistantActionStatus[] = ['waiting', 'confirmed', 'declined', 'expired', 'done', 'failed'];
 
-export interface AssistantNotice { kind: 'assistant-notice' }
+export interface AssistantNotice { kind: 'assistant-notice'; /** The meeting this notice closes; the chat links to its page. */ meetingCallId?: string }
 export interface AssistantReply { kind: 'assistant-reply'; askedBy: string; askedByName: string }
 export interface AssistantAction {
   kind: 'assistant-action';
@@ -30,7 +30,7 @@ const text = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 /** The assistant message a chat message's metadata describes, or null for anything else. */
 export function readAssistantMessage(metadata: Record<string, unknown> | undefined): AssistantMessage | null {
   if (!metadata || metadata['assistant'] !== true) return null;
-  if (metadata['kind'] === 'assistant-notice') return { kind: 'assistant-notice' };
+  if (metadata['kind'] === 'assistant-notice') return { kind: 'assistant-notice', ...(text(metadata['meetingCallId']) ? { meetingCallId: metadata['meetingCallId'] } : {}) };
   if (metadata['kind'] === 'assistant-reply') {
     return text(metadata['askedBy']) && text(metadata['askedByName'])
       ? { kind: 'assistant-reply', askedBy: metadata['askedBy'], askedByName: metadata['askedByName'] } : null;
@@ -86,3 +86,7 @@ export async function decideAssistantAction(callId: string, actionId: string, de
   const message = json && typeof json === 'object' && typeof (json as Record<string, unknown>)['error'] === 'string' ? String((json as Record<string, unknown>)['error']) : '';
   throw new Error(message || `The decision could not be saved (${response.status}).`);
 }
+
+/** A new work item whose arguments (listed in the card's detail lines) name no initiative lands on the call's own: only then does the card say which. */
+export const namesNoInitiative = (action: Pick<AssistantAction, 'tool' | 'detail'>): boolean =>
+  action.tool.name === 'create' && action.detail.some((l) => /^kind:\s*work-item\s*$/i.test(l)) && !action.detail.some((l) => /^initiative\b/i.test(l));
