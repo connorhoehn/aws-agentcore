@@ -55,9 +55,13 @@ export const MAX_REPLACEMENTS = 3;
 export const SESSION_EXPIRY_MARGIN_MS = 5 * 60_000;
 /** A failed replacement is retried after each of these delays; when they are spent Nova leaves (audit B9). */
 export const REPLACEMENT_RETRY_MS: readonly number[] = [1000, 3000, 9000];
-/** The voice speaks a short acknowledgement the moment it delegates; output this soon after a delegation is not posted. */
+/** The most a tool call's arguments may weigh, as JSON, and the most a browser's result may weigh. */
 export const MAX_ARGS_BYTES = 4096;
 export const MAX_RESULT_BYTES = 16 * 1024;
+/** How many unmatched delegation times a run keeps. */
+export const MAX_DELEGATIONS = 16;
+/** A delegation older than this before a function call is not matched to it. */
+export const DELEGATION_MAX_AGE_MS = 60_000;
 const RECENT_TRANSCRIPT_MS = 5 * 60_000;
 const RECENT_TRANSCRIPT_LINES = 60;
 
@@ -146,6 +150,8 @@ interface CallRun {
   replyById: Map<string, ReplyContext>;
   /** When each tool call of this session was received and answered (null: still open). */
   callTimes: Map<string, { openedAt: number; answeredAt: number | null }>;
+  /** When the provider said the model began working on a request (epoch ms), not yet matched to a function call; oldest dropped. */
+  delegations: number[];
   lastUnaskedNoticeAt: number;
   attendanceAt: number;
   /** When the heartbeat (session.lastAliveAt, and the figures to settle) was last written. */
@@ -271,7 +277,7 @@ export class AssistantRuntime {
     this.watchIntake();
     const run: CallRun = {
       ctx, session: null, unsubscribers: [], sessionStartedAt: 0, sessionNo: 0, pieceNo: 0, timeline: new VoicedTimeline(),
-      calls: new Map(), turnCalls: new Map(), requestCalls: new Map(), typedNoticed: new Set(), holding: new Set(), reply: null, replyById: new Map(), callTimes: new Map(), lastUnaskedNoticeAt: -Infinity, attendanceAt: -Infinity, heartbeatAt: -Infinity,
+      calls: new Map(), turnCalls: new Map(), requestCalls: new Map(), typedNoticed: new Set(), holding: new Set(), reply: null, replyById: new Map(), callTimes: new Map(), delegations: [], lastUnaskedNoticeAt: -Infinity, attendanceAt: -Infinity, heartbeatAt: -Infinity,
       intentionalClose: false, usageSeconds: 0, tokens: { input: 0, output: 0, cached: 0 },
       totals: { seconds: 0, input: 0, output: 0, cached: 0 }, replacements: 0, voice: false, voiceHeld: false,
       relay: new VoiceRelay(ctx.callId, voiceChannel(ctx.callId), () => this.deps.voiceSink ?? defaultVoiceSink), speech: new NovaSpeech(), expiresAt: null, sessionKind: 'scripted', chain: Promise.resolve(), lineChain: Promise.resolve(), providerErrorCount: 0, echoLinesDropped: 0, providerErrors: [], finished: false,
@@ -384,7 +390,7 @@ export class AssistantRuntime {
     if (!session) throw new Error('no live session is available in this process');
     run.sessionNo += 1; run.pieceNo = 0; run.timeline = new VoicedTimeline();
     run.usageSeconds = 0; run.tokens = { input: 0, output: 0, cached: 0 };
-    run.calls = new Map(); run.turnCalls = new Map(); run.holding = new Set(); run.reply = null; run.replyById = new Map(); run.callTimes = new Map(); run.intentionalClose = false;
+    run.calls = new Map(); run.turnCalls = new Map(); run.holding = new Set(); run.reply = null; run.replyById = new Map(); run.callTimes = new Map(); run.delegations = []; run.intentionalClose = false;
     run.expiresAt = null;
     this.wire(run, session);
     run.sessionKind = session.kind;
@@ -435,6 +441,12 @@ export class AssistantRuntime {
       session.on('usage', (e) => {
         run.usageSeconds = Math.max(run.usageSeconds, e.seconds);
         if (e.backendTokens) run.tokens = { input: e.backendTokens.inputTokens, output: e.backendTokens.outputTokens, cached: e.backendTokens.cachedTokens };
+      }),
+      // The moment the model began working on a request, kept until a function call takes it (a scripted session names its asker).
+      session.on('delegation', (e) => {
+        if (session.kind === 'scripted') return;
+        run.delegations.push(run.sessionStartedAt + e.atMs);
+        if (run.delegations.length > MAX_DELEGATIONS) run.delegations.shift();
       }),
       session.on('outputAudio', (e) => this.onOutputAudio(run, session, e)),
       session.on('outputTranscript', (e) => { if (run.voice) run.speech.noteText(this.now(), e.text, e.final); }),
@@ -761,15 +773,27 @@ export class AssistantRuntime {
     await this.store.bumpRefused(run.ctx.callId);
   }
 
+  /** The latest delegation time at or before `at`, removed from the list; null when there is none. */
+  private takeDelegation(run: CallRun, at: number): number | null {
+    // A delegation long before the call belongs to a request that never produced one: it is dropped, not matched.
+    run.delegations = run.delegations.filter((d) => d >= at - DELEGATION_MAX_AGE_MS);
+    let best = -1;
+    for (let i = 0; i < run.delegations.length; i += 1) if (run.delegations[i]! <= at && (best < 0 || run.delegations[i]! >= run.delegations[best]!)) best = i;
+    if (best < 0) return null;
+    return run.delegations.splice(best, 1)[0]!;
+  }
+
   private async onToolCall(run: CallRun, e: SessionEvents['toolCall']): Promise<void> {
     const id = e.callId;
     if (run.calls.has(id)) return;
     run.calls.set(id, 'open');
-    run.callTimes.set(id, { openedAt: this.now(), answeredAt: null });
+    // The request was made when the model began working on it, not when its function call reached the server: judge from then.
+    const began = run.session?.kind === 'scripted' ? null : this.takeDelegation(run, run.sessionStartedAt + e.atMs);
+    run.callTimes.set(id, { openedAt: began ?? this.now(), answeredAt: null });
     // Judged only after every line that arrived before the call is stored (the asker is found among them).
     await run.lineChain;
     try {
-      await this.handleToolCall(run, e);
+      await this.handleToolCall(run, e, began);
     } catch (err) {
       console.warn('[meeting-assistant] tool call failed', (err as Error).message);
       this.answer(run, id, { error: 'Nova could not run that.' });
@@ -779,12 +803,12 @@ export class AssistantRuntime {
     }
   }
 
-  private async handleToolCall(run: CallRun, e: SessionEvents['toolCall']): Promise<void> {
+  private async handleToolCall(run: CallRun, e: SessionEvents['toolCall'], judgedAt: number | null = null): Promise<void> {
     const { callId, tenant } = run.ctx;
     const record = await this.store.get(callId);
     if (!record || record.state !== 'listening') { this.answer(run, e.callId, { refused: 'not listening' }); return; }
     if (record.requests > assistantLimits().maxRequests) { await this.refuse(run, e.callId, 'request limit reached'); return; }
-    const atMs = run.session?.kind === 'scripted' ? this.now() : run.sessionStartedAt + e.atMs;
+    const atMs = run.session?.kind === 'scripted' ? this.now() : (judgedAt ?? run.sessionStartedAt + e.atMs);
     // (a) The asker: the server's own record of who spoke.
     const asker = e.askedBy ?? await this.findAsker(callId, atMs).then((f) => (f.ok ? f.userId : null));
     if (!asker) {

@@ -32,7 +32,7 @@ import { voiceTool } from '../../voice/catalogue.js';
 import { meetingTools } from '../instructions.js';
 import { MemoryAssistantStore } from '../store.js';
 import { MockTranscriptSource } from '../transcript-source.js';
-import { AssistantRuntime, startTurnSweep, TYPED_UNSUPPORTED_REPLY, READ_TURN_TTL_MS, WRITE_TURN_TTL_MS, classifyCall, describeCall, type StartContext } from '../orchestrator.js';
+import { AssistantRuntime, startTurnSweep, TYPED_UNSUPPORTED_REPLY, READ_TURN_TTL_MS, WRITE_TURN_TTL_MS, MAX_DELEGATIONS, classifyCall, describeCall, type StartContext } from '../orchestrator.js';
 import { ScriptedSession } from '../scripted-session.js';
 import { SessionEmitter, SessionTextUnsupported, type LiveMeetingSession, type SessionEvents, type SessionStartInput } from '../session.js';
 import { newAssistantSession, sessionOf, type AssistantRecord } from '../types.js';
@@ -868,6 +868,47 @@ describe('reads about the asker alone are answered privately (S1)', () => {
     s.call('call_i', 'list', { kind: 'initiative' }); await flush();
     const [turn] = await runtime.turnsFor(CALL, BOB);
     expect(turn!.kind).toBe('read');
+  });
+});
+
+describe('the asker is judged when the request was made (S2)', () => {
+  it('a second person addressing Nova between the delegation and the function call does not become the asker', async () => {
+    const s = await realRuntime();
+    await line(ALICE, 'Nova, find the experts.', T0 + 1000);
+    s.fire('delegation', { atMs: 1500 });
+    await line(BOB, 'Nova, what is the time?', T0 + 4000);
+    s.call('call_d', 'search', { query: 'experts' }, 6000); await flush();
+    expect((await runtime.turnsFor(CALL, ALICE)).map((t) => t.askedBy)).toEqual([ALICE]);
+    expect(await runtime.turnsFor(CALL, BOB)).toEqual([]);
+  });
+
+  it('with no delegation event the latest addressing line before the call is the asker, as before', async () => {
+    const s = await realRuntime();
+    await line(ALICE, 'Nova, find the experts.', T0 + 1000);
+    await line(BOB, 'Nova, what is the time?', T0 + 4000);
+    s.call('call_n', 'search', { query: 'experts' }, 6000); await flush();
+    expect((await runtime.turnsFor(CALL, BOB)).map((t) => t.askedBy)).toEqual([BOB]);
+  });
+
+  it('a delegation is used once, and one long before the call is not matched', async () => {
+    const s = await realRuntime();
+    await line(ALICE, 'Nova, find the experts.', T0 + 1000);
+    await line(BOB, 'Nova, find the owners.', T0 + 4000);
+    s.fire('delegation', { atMs: 1500 });
+    s.call('call_1', 'search', { query: 'experts' }, 2000); await flush();
+    s.call('call_2', 'search', { query: 'owners' }, 6000); await flush();
+    expect((await runtime.turnsFor(CALL, ALICE)).map((t) => t.tool.args)).toEqual([{ query: 'experts' }]);
+    expect((await runtime.turnsFor(CALL, BOB)).map((t) => t.tool.args)).toEqual([{ query: 'owners' }]);
+    s.fire('delegation', { atMs: 100 });
+    await line(BOB, 'Nova, find the teams.', T0 + 200_000);
+    s.call('call_3', 'search', { query: 'teams' }, 201_000); await flush();
+    expect((await runtime.turnsFor(CALL, BOB)).map((t) => t.tool.args)).toContainEqual({ query: 'teams' });
+  });
+
+  it('the list of unmatched delegation times stays bounded', async () => {
+    const s = await realRuntime();
+    for (let i = 0; i < MAX_DELEGATIONS + 20; i += 1) s.fire('delegation', { atMs: i });
+    expect((runtime as unknown as { runs: Map<string, { delegations: number[] }> }).runs.get(CALL)!.delegations).toHaveLength(MAX_DELEGATIONS);
   });
 });
 
