@@ -27,6 +27,7 @@ const HEARD_RMS = 150;
  *   dry.reply       { text, frames }  a spoken answer: output text and that many voiced 100 ms frames, `delayMs` after (default 400)
  *   dry.call        { name, args }    a delegation and a function call; the output comes back as `response.item.create`
  *   dry.followup    string | (output) => { text, frames }  what is said once the call's output arrives
+ *   dry.afterContext string | (content) => { text, frames }  what is said when the server appends context about that call (a write done or declined)
  *   dry.id          a name other entries can point at (`echoOf`)
  * An echo entry (`addEcho`) sends a transcript delta for the window in which a reply was heard again by a microphone.
  */
@@ -90,7 +91,7 @@ export class FakeProvider {
         send({ type: 'session.input_transcript.delta', start_ms: Math.max(0, Math.round(start)), end_ms: Math.max(1, Math.round(end)), delta: ` ${delta}` }); this.seen.deltas += 1;
         if (dry.reply) later(dry.delayMs ?? 400, () => speakText(dry.reply.text, dry.reply.frames ?? 25, dry.id));
         if (dry.call) later(dry.delayMs ?? 400, () => {
-          st.callNo += 1; const callId = `call_dry_${this.connections}_${st.callNo}`; st.calls.set(callId, e); this.seen.calls.push(dry.call.name);
+          st.callNo += 1; st.lastCall = e; const callId = `call_dry_${this.connections}_${st.callNo}`; st.calls.set(callId, e); this.seen.calls.push(dry.call.name);
           send({ type: 'session.delegation.created', offset_ms: st.audioMs, delegation: { id: `item_${callId}`, type: 'delegation', target: 'responses' } });
           send({ type: 'response.event', event: { type: 'response.output_item.done', item: { type: 'function_call', call_id: callId, name: dry.call.name, arguments: JSON.stringify(dry.call.args ?? {}) } } });
         });
@@ -132,6 +133,13 @@ export class FakeProvider {
         const f = entry?.dry?.followup;
         const r = typeof f === 'function' ? f(out) : typeof f === 'string' ? { text: f, frames: 25 } : null;
         if (r) later(300, () => speakText(r.text, r.frames ?? 25, entry.dry.id ? `${entry.dry.id}:followup` : undefined));
+      } else if (ev.type === 'session.thinking.append') {
+        // Context the server appends (a write done, declined or expired): the call's `afterContext` says what Nova says about it.
+        const f = st.lastCall?.dry?.afterContext;
+        const r = typeof f === 'function' ? f(String(ev.content ?? '')) : typeof f === 'string' ? { text: f, frames: 12 } : null;
+        if (r) later(300, () => speakText(r.text, r.frames ?? 12, undefined));
+        this.seen.appended = (this.seen.appended ?? 0) + 1;
+        (this.seen.appendedText ??= []).push(String(ev.content ?? '').slice(0, 80));
       } else if (ev.type === 'session.close') {
         this.seen.closed += 1;
         send({ type: 'session.closed', reason: 'closed', usage: { seconds: Math.round((Date.now() - st.openedAt) / 1000) } });
