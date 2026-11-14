@@ -47,11 +47,15 @@ export function makeContext({ world, reporter, minutes = null, dry }) {
     const { pcm } = synth(text, { voice: voice ?? PEOPLE[key].voice, rate, dir: world.dir });
     return lane.say(atMs, pcm, { gain, dry: dryBehaviour, text, label });
   };
+  /** A cursor for laying a dialogue out one line after another: `next` places the line `gap` ms after the previous one ended (a negative gap overlaps). */
+  ctx.cursor = 0;
+  ctx.at = (ms) => { ctx.cursor = ms; return ctx; };
+  ctx.next = (key, text, { gap = 1200, ...opts } = {}) => { const ev = ctx.say(key, ctx.cursor + gap, text, opts); ctx.cursor = ev.endMs; return ev; };
   ctx.until = async (ms) => { const wait = ms - world.clock.now(); if (wait > 0) await sleep(wait); };
   ctx.begin = () => { world.startClock(); for (const lane of Object.values(ctx.lanes)) lane.start(); };
   ctx.run = async (ms) => { ctx.begin(); await ctx.until(ms); await world.stopLanes(); };
   ctx.turns = (key, decide) => { const t = ctx.p[key].runTurns(ctx.call.callId, decide); ctx.runners.push(t); return t; };
-  ctx.debug = async () => { if (!process.env.MA_DEBUG) return; const raw = await ctx.p[ctx.inviterKey].call('GET', `/api/calls/${encodeURIComponent(ctx.call.callId)}/chat?limit=100`); console.log(`     [debug] chat http ${raw.status} ${JSON.stringify(raw.json)?.slice(0, 300)}`); const m = raw.json?.messages ?? []; for (const x of m) console.log(`     [debug] chat ${x.userId} ${x.metadata?.kind ?? ''} ${String(x.message).slice(0, 110)}`); const tl = await ctx.call.transcript(); for (const l of tl) console.log(`     [debug] line ${l.userId} ${l.text.slice(0, 90)}`); console.log(`     [debug] provider ${JSON.stringify(world.provider?.seen)}`); const st = await ctx.call.state(); console.log(`     [debug] state ${JSON.stringify(st)}`); };
+  ctx.debug = async () => { if (!process.env.MA_DEBUG) return; const raw = await ctx.p[ctx.inviterKey].call('GET', `/api/calls/${encodeURIComponent(ctx.call.callId)}/chat?limit=100`); console.log(`     [debug] chat http ${raw.status} ${JSON.stringify(raw.json)?.slice(0, 300)}`); const m = raw.json?.messages ?? []; for (const x of m) console.log(`     [debug] chat ${x.userId} ${x.metadata?.kind ?? ''} ${String(x.message).slice(0, 110)}`); const tl = await ctx.call.transcript(); for (const l of tl) console.log(`     [debug] line ${l.userId} ${JSON.stringify(l.speakers ?? [])} ${l.startMs}-${l.endMs} at=${l.at} ${l.text.slice(0, 60)}`); console.log(`     [debug] provider ${JSON.stringify(world.provider?.seen)}`); const st = await ctx.call.state(); console.log(`     [debug] state ${JSON.stringify(st)}`); };
   ctx.novaMessages = () => ctx.call.novaMessages(ctx.p[ctx.inviterKey]);
   return ctx;
 }

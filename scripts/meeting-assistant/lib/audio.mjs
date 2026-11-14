@@ -149,7 +149,8 @@ export class Lane {
       while (this.running) {
         const t = k * CHUNK_MS;
         if (t >= this.stopAt) break;
-        const wait = t - this.clock.now();
+        // A tap posts a chunk when its 200 ms have gone by: the chunk holds the audio of the 200 ms BEFORE it arrives.
+        const wait = t + CHUNK_MS - this.clock.now();
         if (wait > 0) await sleep(wait);
         if (!this.running) break;
         this.postChunk(t, k * CHUNK_SAMPLES);

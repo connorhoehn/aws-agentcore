@@ -13,6 +13,8 @@ const { WebSocketServer } = createRequire(path.join(MW, 'package.json'))('ws');
 export const PROVIDER_HOST = 'api.openai.com';
 /** The provider hears a quiet stretch this long before it calls a spoken line finished. */
 const VAD_MS = 900;
+/** Where the provider's audio clock puts a moment of the call: the mixer's playout delay (300 ms) plus the first 100 ms frame. */
+export const PIPELINE_MS = 400;
 
 /**
  * A provider that does exactly what the scenario says (no model, no loudness test). Each utterance the scenario places on a lane is
@@ -72,7 +74,7 @@ export class FakeProvider {
       const now = st.audioMs;
       // Utterances: heard once their span plus the quiet stretch has gone by on this connection's clock.
       const ripe = this.entries.filter((e) => !e.done.has(ws) && e.dry?.transcript !== false);
-      const due = ripe.map((e) => ({ e, start: e.atMs + this.t0Wall - st.anchor, end: e.endMs + this.t0Wall - st.anchor })).filter((x) => x.end + VAD_MS <= now).sort((a, b) => a.end - b.end);
+      const due = ripe.map((e) => ({ e, start: e.atMs + this.t0Wall - st.anchor + PIPELINE_MS, end: e.endMs + this.t0Wall - st.anchor + PIPELINE_MS })).filter((x) => x.end + VAD_MS <= now).sort((a, b) => a.end - b.end);
       for (const { e, start, end } of due) {
         e.done.add(ws);
         if (end < 0) continue; // spoken before this connection began
