@@ -72,7 +72,7 @@
 
 import type { RunCommandPhrase } from './catalogue.ts';
 import {
-  channelTag, ambiguous, computersOf, done, failed, once, qs, readFailure, readJson, refused, socialGrantRefusal, TOOL_RUNNERS,
+  channelTag, ambiguous, computersOf, done, failed, once, positionRefusal, qs, readFailure, readJson, refused, socialGrantRefusal, TOOL_RUNNERS,
   type CallAccess, type ConfirmPlan, type DeliveryRecord, type PresenceWriter, type ProjectRow, type ToolContext, type ToolResult,
   type VoiceComputer, type VoiceToolArgs, type VoiceToolPlanner, type VoiceToolRunner,
 } from './tools.ts';
@@ -566,6 +566,8 @@ export const SHARE_FOR_MS = 24 * 60 * 60 * 1000;
  */
 async function planAttachment(ctx: ToolContext, raw: unknown, to: { userId?: string; label: string }): Promise<{ attachment: Attachment } | { result: ToolResult }> {
   const given = String(raw).trim();
+  const strict = positionRefusal(ctx, given);
+  if (strict) return { result: strict };
   const kept = ctx.results?.find(given) ?? null;
   const onPage = kept ? null : ctx.page?.()?.rows.find((r) => r.ref === given) ?? null;
   const row = kept ? { ref: kept.ref, title: kept.title, href: kept.href } : onPage ? { ref: onPage.ref, title: onPage.title, href: onPage.href ?? null } : null;

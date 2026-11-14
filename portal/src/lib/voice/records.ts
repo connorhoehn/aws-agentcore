@@ -30,7 +30,7 @@ import { DELEGATION_REASON_MIN, DELEGATION_WINDOWS, JUSTIFICATION_MIN, delegatio
 import { WORK_PLANNERS, WORK_RUNNERS, matchByName } from './work.ts';
 import { dialogueRows, matchDialogueRow, optionOutcome, type DialogueRow } from '../../pages/decisions/decisionDialogue.ts';
 import {
-  MAX_FIELD_CHARS, channelTag, ambiguous, deliveryIdFor, done, failed, findByName, localHref, once, pageRowNamed, qs, readFailure, readJson, refused, resolveSprint, samePerson, sayLine, socialGrantRefusal, workItemRow,
+  MAX_FIELD_CHARS, channelTag, ambiguous, deliveryIdFor, done, failed, findByName, localHref, positionRefusal, once, pageRowNamed, qs, readFailure, readJson, refused, resolveSprint, samePerson, sayLine, socialGrantRefusal, workItemRow,
   type CardAnswer, type ConfirmPlan, type ToolContext, type ToolResult, type VoiceToolArgs, type VoiceToolPlanner, type VoiceToolRunner,
 } from './tools.ts';
 import { safeLabel } from './inbound.ts';
@@ -387,6 +387,8 @@ const planDecide: VoiceToolPlanner = async (args, ctx) => {
     if ('result' in hit) return hit;
     ref = hit.row.ref;
   } else if (/^\d{1,2}$/.test(ref)) {
+    const strict = positionRefusal(ctx, ref);
+    if (strict) return { result: strict };
     const kept = ctx.results?.find(ref);
     if (!kept) return { result: refused(`There is no row ${ref} in the last result. List what is waiting first.`) };
     ref = kept.ref;
@@ -957,6 +959,8 @@ async function planWorkItemUpdate(field: string, value: unknown, ref: string, ct
 const planUpdate: VoiceToolPlanner = async (args, ctx) => {
   let ref = String(args['ref']).trim();
   if (/^\d{1,2}$/.test(ref)) {
+    const strict = positionRefusal(ctx, ref);
+    if (strict) return { result: strict };
     const kept = ctx.results?.find(ref);
     if (!kept) return { result: refused(`There is no row ${ref} in the last result. List them first.`) };
     ref = kept.ref;

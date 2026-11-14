@@ -283,6 +283,11 @@ export function pageRows(ctx: ToolContext): { page: PublishedPage; rows: readonl
 /** What a card shows when a write from a call named no single record exactly. */
 export const STRICT_SENTENCE = "Say the record's full name.";
 
+/** A write from a call refuses a position ("2", "the second one"): the refusal sentence for a bare number, else null. */
+export function positionRefusal(ctx: ToolContext, said: string): ToolResult | null {
+  return ctx.strictTargets && /^\d{1,2}$/.test(said.trim()) ? refused(STRICT_SENTENCE) : null;
+}
+
 /** Row `n` (1-based) of the page in view, or the refusal. */
 export function pageRowAt(ctx: ToolContext, n: number): { row: PageRow } | { result: ToolResult } {
   if (ctx.strictTargets) return { result: refused(STRICT_SENTENCE) };
