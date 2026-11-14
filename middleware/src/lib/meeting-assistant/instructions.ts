@@ -155,7 +155,7 @@ export function rosterList(roster: readonly string[]): string {
 
 /** The lines as "Name: text", newest last, cut to fit the budget from the oldest end. */
 export function transcriptContext(lines: readonly TranscriptLine[]): string {
-  const rows = lines.map((l) => `${(l.speakerName || 'Someone').slice(0, 60)}: ${l.text}`);
+  const rows = lines.map((l) => `${cleanName(l.speakerName).slice(0, 60) || 'Someone'}: ${l.text}`);
   let out = '';
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     if (out.length + rows[i]!.length + 1 > CONTEXT_CHARS) break;

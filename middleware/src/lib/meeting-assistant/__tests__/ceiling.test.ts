@@ -121,6 +121,14 @@ describe('the ceiling', () => {
 });
 
 describe('extension', () => {
+  it('two extensions at once keep both hold ids', async () => {
+    const slow = jest.spyOn(spend, 'reserve').mockImplementation(async (i) => { await new Promise<void>((r) => setImmediate(r)); reserved.push(i); return { ok: true, holdId: `hold-${i.part}` }; });
+    const [a, b] = await Promise.all([runtime.extend(CALL, { sub: ALICE }), runtime.extend(CALL, { sub: ALICE })]);
+    slow.mockRestore();
+    expect(a).toMatchObject({ ok: true }); expect(b).toMatchObject({ ok: true });
+    expect(sessionOf(await rec())).toMatchObject({ holds: ['hold-1', 'hold-2'], extensions: 2 });
+  });
+
   it('adds the default minutes up to the hard maximum, holds the money each time, and re-arms the warning', async () => {
     await advance(400);
     expect(mockPosts.notices).toHaveLength(1);

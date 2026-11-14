@@ -260,6 +260,7 @@ export function describeCall(name: string, args: unknown): { summary: string; de
 
 export class AssistantRuntime {
   private readonly runs = new Map<string, CallRun>();
+  private readonly extending = new Map<string, Promise<void>>();
   private subscribedTo: LineIntake | null = null;
   private unsubscribeIntake: (() => void) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -1054,6 +1055,17 @@ export class AssistantRuntime {
    * ceiling, or why not: the call is over, the maximum is reached, or the inviter's budget refused the hold.
    */
   async extend(callId: string, by: { sub: string }, confirmOverUserBudget = false):
+    Promise<{ ok: true; ceilingSeconds: number; addedSeconds: number } | { ok: false; why: 'no-assistant' | 'left' | 'at-maximum' } | { ok: false; why: 'refused'; refusal: Extract<ReserveOutcome, { ok: false }>['refusal'] }> {
+    // Two extensions of one call at once would each read the same hold list and the later write would drop the other's hold id.
+    const before = this.extending.get(callId) ?? Promise.resolve();
+    const mine = before.then(() => this.extendOnce(callId, by, confirmOverUserBudget));
+    const tail = mine.then(() => undefined, () => undefined);
+    this.extending.set(callId, tail);
+    void tail.then(() => { if (this.extending.get(callId) === tail) this.extending.delete(callId); });
+    return mine;
+  }
+
+  private async extendOnce(callId: string, by: { sub: string }, confirmOverUserBudget: boolean):
     Promise<{ ok: true; ceilingSeconds: number; addedSeconds: number } | { ok: false; why: 'no-assistant' | 'left' | 'at-maximum' } | { ok: false; why: 'refused'; refusal: Extract<ReserveOutcome, { ok: false }>['refusal'] }> {
     const record = await this.store.get(callId);
     if (!record) return { ok: false, why: 'no-assistant' };
