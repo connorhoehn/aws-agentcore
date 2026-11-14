@@ -100,6 +100,12 @@ export function looksCut(text: string): boolean {
   return DANGLING.has(last);
 }
 
+/**
+ * Capitalised words that, straight after the assistant's name with only a space between, make a known place or product name
+ * ("Nova Scotia"), not an address. A small explicit list: an address has a comma, a pause or a request after the name.
+ */
+const NAME_PHRASE_SECOND_WORDS: ReadonlySet<string> = new Set(['Scotia', 'Scotian', 'Lima', 'Gorica', 'Friburgo', 'Poshta', 'Launcher']);
+
 interface NameHit { addressed: boolean; rest: string }
 
 /** The first mention of the name that is addressing the assistant, and what follows it. */
@@ -110,6 +116,7 @@ export function findAddress(text: string): NameHit | null {
     const before = text.slice(0, start).trim();
     const after = text.slice(end);
     const rest = after.replace(/^[\s,:;.\-–—!?…]+/, '').trim();
+    if (/^ +\S/.test(after) && NAME_PHRASE_SECOND_WORDS.has(after.trim().split(/\s+/)[0]!.replace(/[^\p{L}]+$/u, ''))) continue;
     const initial = before === '' || /[.!?;…]["')\]]*$/.test(before) || GREETING_ONLY.test(before);
     let addressed = initial;
     // Name as the very last word: the request is coming in the speaker's next caption, unless it is a thank-you.

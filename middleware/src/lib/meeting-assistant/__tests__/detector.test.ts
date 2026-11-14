@@ -290,3 +290,15 @@ describe('nameLock', () => {
     expect(nameLock(lines, 'u-other', 105_000)).toBe(false);
   });
 });
+
+describe('a place or product name that begins with the assistant\'s name', () => {
+  it('is not an address, even at the start of a sentence', () => {
+    expect(findAddress('Nova Scotia is lovely in the autumn.')).toBeNull();
+    expect(findAddress('We flew out. Nova Scotia was next.')).toBeNull();
+  });
+  it('the real address forms still address', () => {
+    expect(findAddress('Nova, what is on the list?')?.rest).toBe('what is on the list?');
+    expect(findAddress('Nova what is Scotia doing?')).not.toBeNull();
+    expect(findAddress('Nova, Scotia is the next topic.')).not.toBeNull();
+  });
+});
