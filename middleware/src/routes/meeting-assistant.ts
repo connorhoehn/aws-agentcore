@@ -406,7 +406,8 @@ meetingAssistantRouter.post('/turns/:turnId/claim', asyncHandler(async (req, res
   const out = await assistantRuntime().claimTurn(callId, turnId, session.sub);
   if (!out) throw new NotFoundError('No such turn');
   if ('conflict' in out) throw new AppError(409, `This turn cannot be claimed: ${out.conflict}`);
-  res.json({ turnId, claimId: out.turn.claimId, tool: out.turn.tool, kind: out.turn.kind });
+  // `expiresAt` is the turn's expiry after the claim (a claimed write is given time to finish), so a late write keeps its result.
+  res.json({ turnId, claimId: out.turn.claimId, tool: out.turn.tool, kind: out.turn.kind, expiresAt: out.turn.expiresAt });
 }));
 
 /** The browser's result of a turn, with the claim id its claim returned (400 without it, 409 when it is not the claim). A caller who is not the asker, or an unknown turn, gets the 404. */

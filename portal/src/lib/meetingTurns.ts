@@ -65,7 +65,7 @@ function defaultStorage(): Storage | null {
 
 /** What the server answered a claim with. Only `claimed` runs; `refused` (404 or 409) is skipped silently; `error` (offline, 5xx) asks again later. */
 export type ClaimResult =
-  | { status: 'claimed'; claimId: string; kind: TurnKind; tool: { name: string; args: unknown } }
+  | { status: 'claimed'; claimId: string; kind: TurnKind; tool: { name: string; args: unknown }; /** The turn's expiry after the claim (server clock), when the server said. */ expiresAt?: number }
   | { status: 'refused' }
   | { status: 'error' };
 
@@ -75,7 +75,7 @@ export function parseClaim(body: unknown): ClaimResult {
   const tool = b && b['tool'] && typeof b['tool'] === 'object' ? b['tool'] as Record<string, unknown> : null;
   if (!b || typeof b['claimId'] !== 'string' || !b['claimId'] || !tool || typeof tool['name'] !== 'string') return { status: 'error' };
   if (b['kind'] !== 'read' && b['kind'] !== 'write' && b['kind'] !== 'private-read') return { status: 'error' };
-  return { status: 'claimed', claimId: b['claimId'], kind: b['kind'], tool: { name: tool['name'], args: tool['args'] } };
+  return { status: 'claimed', claimId: b['claimId'], kind: b['kind'], tool: { name: tool['name'], args: tool['args'] }, ...(typeof b['expiresAt'] === 'number' && Number.isFinite(b['expiresAt']) ? { expiresAt: b['expiresAt'] } : {}) };
 }
 
 export interface ResultBody { ok: boolean; output?: unknown; error?: string }
@@ -187,7 +187,7 @@ export async function processTurns(turns: readonly AssistantTurn[], deps: TurnDe
     } catch (error) {
       out = { ok: false, error: `That did not run: ${(error as Error).message}`.slice(0, 280) };
     }
-    deps.pending.add({ turnId: turn.turnId, claimId: claim.claimId, expiresAt: turn.expiresAt, body: resultBody(claim.kind, out) });
+    deps.pending.add({ turnId: turn.turnId, claimId: claim.claimId, expiresAt: Math.max(turn.expiresAt, claim.expiresAt ?? 0), body: resultBody(claim.kind, out) });
     ran += 1;
     await flushResults(deps);
   }
@@ -203,4 +203,40 @@ export type TurnRunnerMode = 'active' | 'poke' | 'off';
 /** The wait before the next scheduled poll, or null when this mode does not poll on a timer. A hidden tab polls slower, it does not stop. */
 export function turnPollBaseMs(mode: TurnRunnerMode, hidden: boolean): number | null {
   return mode === 'active' ? (hidden ? TURN_POLL_HIDDEN_MS : TURN_POLL_MS) : null;
+}
+
+/** Every request the turn runner makes ends within this long, so one hung request cannot hold the runner. */
+export const EXECUTOR_REQUEST_MS = 30_000;
+
+export interface PollChainDeps<H> {
+  /** One poll; true when the server answered. */
+  poll(): Promise<boolean>;
+  /** The wait before the next poll after `failures` failures in a row, or null for no timer (the mode polls only when poked). */
+  nextMs(failures: number): number | null;
+  schedule(fn: () => void, ms: number): H;
+  cancel(handle: H): void;
+}
+
+/**
+ * One timer chain per runner. A tick that is running owns the next timer, so a nudge (a visibility change) that arrives
+ * during a poll starts nothing; a nudge between polls replaces the waiting timer with an immediate poll.
+ */
+export function pollChain<H>(deps: PollChainDeps<H>): { start(): void; nudge(): void; stop(): void } {
+  let stopped = false;
+  let ticking = false;
+  let failures = 0;
+  let timer: H | null = null;
+  const tick = async (): Promise<void> => {
+    timer = null;
+    if (stopped || ticking) return;
+    ticking = true;
+    try { failures = (await deps.poll()) ? 0 : failures + 1; } finally { ticking = false; }
+    const wait = deps.nextMs(failures);
+    if (!stopped && wait !== null) timer = deps.schedule(() => void tick(), wait);
+  };
+  return {
+    start: () => { void tick(); },
+    nudge: () => { if (stopped || ticking) return; if (timer !== null) deps.cancel(timer); void tick(); },
+    stop: () => { stopped = true; if (timer !== null) deps.cancel(timer); },
+  };
 }

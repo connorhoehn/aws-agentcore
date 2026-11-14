@@ -228,3 +228,43 @@ test('a seated person keeps polling when the tab is hidden, slower; a person not
   assert.equal(turnPollBaseMs('poke', true), null);
   assert.equal(turnPollBaseMs('off', false), null);
 });
+
+test('a write claimed late keeps its result: the claim answers the new expiry and the kept result uses it', async () => {
+  const { parseClaim } = await import('../meetingTurns.ts');
+  assert.equal((parseClaim({ claimId: 'c', kind: 'write', tool: { name: 'create' }, expiresAt: NOW + 90_000 }) as { expiresAt?: number }).expiresAt, NOW + 90_000);
+  assert.equal((parseClaim({ claimId: 'c', kind: 'write', tool: { name: 'create' }, expiresAt: 'soon' }) as { expiresAt?: number }).expiresAt, undefined);
+  const h = harness();
+  let wall = NOW;
+  h.deps.claim = async () => ({ status: 'claimed', claimId: 'c-w', kind: 'write', tool: { name: 'create', args: {} }, expiresAt: NOW + 90_000 });
+  const deps = { ...h.deps, wall: () => wall, now: () => wall, post: async () => 500 };
+  await processTurns([turn({ turnId: 't-w', kind: 'write', status: 'running', expiresAt: NOW + 1000 })], deps);
+  assert.equal(h.pending.list()[0]!.expiresAt, NOW + 90_000);
+  wall = NOW + 30_000; // past the listed expiry, inside the claim's: the result is still posted, not dropped
+  await flushResults({ ...deps, post: async (turnId, body) => { h.posted.push({ turnId, body }); return 200; } });
+  assert.equal(h.posted.length, 1);
+  assert.equal(h.pending.size, 0);
+});
+
+test('a poll chain keeps one timer, whatever nudges arrive during a poll', async () => {
+  const { pollChain } = await import('../meetingTurns.ts');
+  const timers = new Map<number, () => void>();
+  let id = 0; let polls = 0; let release: (() => void) | null = null;
+  const chain = pollChain<number>({
+    poll: () => { polls += 1; return new Promise<boolean>((resolve) => { release = () => resolve(true); }); },
+    nextMs: () => 2000,
+    schedule: (fn) => { id += 1; timers.set(id, fn); return id; },
+    cancel: (h) => { timers.delete(h); },
+  });
+  chain.start();
+  chain.nudge(); chain.nudge(); // visibility changes during the poll
+  assert.equal(polls, 1);
+  release!(); await new Promise((r) => setImmediate(r));
+  assert.equal(timers.size, 1, 'exactly one timer waits');
+  chain.nudge(); // between polls: the waiting timer is replaced by an immediate poll
+  assert.equal(timers.size, 0);
+  assert.equal(polls, 2);
+  release!(); await new Promise((r) => setImmediate(r));
+  assert.equal(timers.size, 1);
+  chain.stop();
+  assert.equal(timers.size, 0);
+});

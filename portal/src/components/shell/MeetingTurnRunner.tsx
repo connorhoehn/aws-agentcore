@@ -11,7 +11,7 @@ import { useMeetingAssistant } from '../../lib/meetingAssistant';
 import { ownMediaId, reportMediaId } from '../../lib/meetingParticipant';
 import { useCallHost } from '../../lib/conversationCall';
 import { onTurnsPoke } from '../../lib/meetingTurnsPoke';
-import { PendingResults, SeenTurns, flushResults, parseClaim, parseTurns, processTurns, turnPollBaseMs, TURN_POLL_MS, type ClaimResult } from '../../lib/meetingTurns';
+import { PendingResults, SeenTurns, flushResults, parseClaim, parseTurns, pollChain, processTurns, turnPollBaseMs, EXECUTOR_REQUEST_MS, TURN_POLL_MS, type ClaimResult } from '../../lib/meetingTurns';
 import { runCallTool } from '../../lib/voice/runCore';
 import { useFetch } from '../../hooks/useFetch';
 import { ResultMemory, type DeliveryRecord, type ToolContext } from '../../lib/voice/tools';
@@ -68,9 +68,11 @@ export function MeetingTurnRunner() {
       if (Number.isFinite(at)) offset = at - Date.now();
     };
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // Every request this runner makes ends within EXECUTOR_REQUEST_MS, so one hung request cannot hold the runner.
+    const limited = (own?: AbortSignal | null): AbortSignal => (own ? AbortSignal.any([own, AbortSignal.timeout(EXECUTOR_REQUEST_MS)]) : AbortSignal.timeout(EXECUTOR_REQUEST_MS));
     const claim = async (turnId: string): Promise<ClaimResult> => {
       try {
-        const res = await fetch(`${base}/turns/${encodeURIComponent(turnId)}/claim`, { method: 'POST', credentials: 'include', cache: 'no-store' });
+        const res = await fetch(`${base}/turns/${encodeURIComponent(turnId)}/claim`, { method: 'POST', credentials: 'include', cache: 'no-store', signal: limited() });
         learn(res);
         if (res.status === 404 || res.status === 409) return { status: 'refused' };
         return res.ok ? parseClaim(await res.json().catch(() => null)) : { status: 'error' };
@@ -78,7 +80,7 @@ export function MeetingTurnRunner() {
     };
     const post = async (turnId: string, body: { claimId: string; ok: boolean; output?: unknown; error?: string }): Promise<number> => {
       const res = await fetch(`${base}/turns/${encodeURIComponent(turnId)}/result`, {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: limited(),
       });
       learn(res);
       return res.status;
@@ -97,7 +99,7 @@ export function MeetingTurnRunner() {
       return {
         tenant: s?.tenant ?? 'orgiq', role: s?.role ?? 'member', switchable: s?.switchable?.[s.tenant] ?? null, userId, userName: s?.name ?? null,
         ledger, results, palette: { pages: PAGES, visible: isPageVisible },
-        can: live.current.can, fetch: (url, init) => fetch(url, init), navigate: () => undefined, now: () => new Date(),
+        can: live.current.can, fetch: (url, init) => fetch(url, { ...init, signal: limited(init?.signal) }), navigate: () => undefined, now: () => new Date(),
         // The call's initiative stands in for "the page in view": a work item made from a card lands on the CALL's initiative, never on
         // whatever page this person is looking at. With none, the tools fail with their own "name the initiative" sentence.
         page: () => { const c = callInitiative.current; return c ? { path: window.location.pathname, record: { ref: `initiative:${c.id}`, title: c.name ?? 'the call\'s initiative' }, rows: [] } : null; },
@@ -109,7 +111,7 @@ export function MeetingTurnRunner() {
       if (busy || stopped) return true;
       busy = true;
       try {
-        const res = await fetch(`${base}/turns?mine=1`, { credentials: 'include', cache: 'no-store' });
+        const res = await fetch(`${base}/turns?mine=1`, { credentials: 'include', cache: 'no-store', signal: limited() });
         learn(res);
         if (!res.ok || stopped) return res.ok;
         await processTurns(parseTurns(await res.json().catch(() => null)), {
@@ -122,27 +124,23 @@ export function MeetingTurnRunner() {
       } catch { return false; } finally { busy = false; }
     };
     const hidden = (): boolean => typeof document !== 'undefined' && document.visibilityState === 'hidden';
-    let failures = 0;
-    let loop: ReturnType<typeof setTimeout> | null = null;
     const followUps: ReturnType<typeof setTimeout>[] = [];
     // While Nova is listening or paused the browser keeps asking; after it has left it asks only when a card is confirmed.
-    const tick = async (): Promise<void> => {
-      loop = null;
-      if (stopped) return;
-      failures = (await poll()) ? 0 : failures + 1; // a hidden tab still polls (slower): its reads and confirmed writes must not wait
-      const base = turnPollBaseMs(mode, hidden());
-      if (!stopped && base !== null) loop = setTimeout(() => void tick(), pollDelay(base, failures));
-    };
+    // A hidden tab still polls (slower): its reads and confirmed writes must not wait.
+    const chain = pollChain<ReturnType<typeof setTimeout>>({
+      poll, schedule: (fn, ms) => setTimeout(fn, ms), cancel: (h) => clearTimeout(h),
+      nextMs: (failures) => { const every = turnPollBaseMs(mode, hidden()); return every === null ? null : pollDelay(every, failures); },
+    });
     void flush(); // a result kept from before a reload is posted again, not run again
-    void tick();
-    const onVisible = (): void => { if (!stopped) { if (loop) clearTimeout(loop); void tick(); } };
+    chain.start();
+    const onVisible = (): void => chain.nudge();
     const off = onTurnsPoke(callId, () => {
       void poll();
       if (mode === 'poke') for (const ms of POKE_FOLLOW_UPS_MS) followUps.push(setTimeout(() => void poll(), ms));
     });
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      stopped = true; if (loop) clearTimeout(loop); for (const t of followUps) clearTimeout(t);
+      stopped = true; chain.stop(); for (const t of followUps) clearTimeout(t);
       if (retryTimer) clearTimeout(retryTimer); off(); document.removeEventListener('visibilitychange', onVisible);
     };
   }, [mode, callId, userId, ledger, results]);

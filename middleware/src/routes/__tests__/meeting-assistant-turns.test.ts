@@ -108,7 +108,7 @@ describe('a read in the call chat', () => {
     expect((await post(`turns/${id}/result`, 'carol', { claimId: 'aaaaaaaaaaaaaaaa', ok: true, output: { rows: [] } })).status).toBe(404);
     const claimed = await post(`turns/${id}/claim`, 'bob');
     expect(claimed.status).toBe(200);
-    expect(claimed.body).toEqual({ turnId: id, claimId: expect.stringMatching(/^[0-9a-f]{24}$/), tool: { name: 'search', args: { query: 'the Kubernetes experts' } }, kind: 'read' });
+    expect(claimed.body).toEqual({ turnId: id, claimId: expect.stringMatching(/^[0-9a-f]{24}$/), tool: { name: 'search', args: { query: 'the Kubernetes experts' } }, kind: 'read', expiresAt: expect.any(Number) });
     const claimId = claimed.body.claimId;
     expect((await post(`turns/${id}/claim`, 'bob')).status).toBe(409);               // one claim per turn
     expect((await get('turns?mine=1', 'bob')).body.turns).toEqual([]);                // a claimed turn is not listed again
