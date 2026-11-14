@@ -30,40 +30,49 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import http from 'node:http';
-import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { runTapSim, readWav } from './tap-sim.mjs';
+import {
+  Guard, installSafetyHandlers, parseBudget, worstCaseUsd, portsFor, startMiddleware, waitHealthy, tailLog as tailLogOf, startFakeMedia, Person, speakToFile, stamp, sleep,
+} from './lib/harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MW = path.join(ROOT, 'middleware');
 const { WebSocketServer } = createRequire(path.join(MW, 'package.json'))('ws');
 
 const args = process.argv.slice(2);
+const flagOf = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const DRY = args.includes('--dry');
 const YES = args.includes('--yes');
 const KEEP = args.includes('--keep-logs');
-const PORT = 3953, PROVIDER_PORT = 3954, MEDIA_PORT = 3955;
+let BUDGET;
+try { BUDGET = parseBudget(flagOf('--budget-usd')); } catch (e) { console.error(`live-e2e: ${e.message}`); process.exit(2); }
+const PORTS = portsFor(flagOf('--port-base') !== undefined ? Number(flagOf('--port-base')) : 3953);
+const PORT = PORTS.mw, PROVIDER_PORT = PORTS.provider, MEDIA_PORT = PORTS.media;
 const BASE = `http://127.0.0.1:${PORT}`;
 const HARD_STOP_MS = 75_000;
+const LIMIT_SECONDS = HARD_STOP_MS / 1000; // the server's own ceiling is this plus a minute; the dead-man preload ends the process after it too
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'meeting-assistant-e2e-'));
+const guard = new Guard({ dir: OUT, keep: KEEP });
+installSafetyHandlers(() => guard);
 
 if (!DRY && !YES) {
   console.log('live-e2e: this is the PAID check: one real live session of about 45 seconds, about $0.04 of voice time (the provider bills $0.05 a minute, per second)');
-  console.log('plus a few cents of tool-call tokens. It reads the key from middleware/.env and stops itself 75 seconds after the invite.');
+  console.log(`plus a few cents of tool-call tokens (worst case $${worstCaseUsd(LIMIT_SECONDS).toFixed(2)}). It reads the key from middleware/.env and stops itself 75 seconds after the invite.`);
   console.log('Re-run with --yes to run it, or with --dry to run the whole chain against a fake provider (no cost).');
+  fs.rmSync(OUT, { recursive: true, force: true });
   process.exit(2);
 }
+if (!DRY && worstCaseUsd(LIMIT_SECONDS) > BUDGET) { console.error(`live-e2e: the worst case $${worstCaseUsd(LIMIT_SECONDS).toFixed(2)} passes --budget-usd ${BUDGET}; nothing was started`); fs.rmSync(OUT, { recursive: true, force: true }); process.exit(2); }
 
 if (!DRY) {
   // The key is read by the middleware itself from middleware/.env (as the voice navigator's is); check it is there without reading it out.
   let present = false;
   try { present = /^OPENAI_API_KEY=\S/m.test(fs.readFileSync(path.join(MW, '.env'), 'utf8')) && !/^OPENAI_API_KEY=.*REPLACE_ME/m.test(fs.readFileSync(path.join(MW, '.env'), 'utf8')); } catch { present = false; }
-  if (!present) { console.error('live-e2e: middleware/.env has no OPENAI_API_KEY; nothing was started and nothing was spent'); process.exit(2); }
+  if (!present) { console.error('live-e2e: middleware/.env has no OPENAI_API_KEY; nothing was started and nothing was spent'); fs.rmSync(OUT, { recursive: true, force: true }); process.exit(2); }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok: !!ok, detail }); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`); return !!ok; };
 
@@ -72,7 +81,6 @@ const VERA = { userId: 'u-vera', role: 'org-leader', voice: 'Samantha', name: 'V
 const SINK_SECRET = 'dry-sink-secret'; // the dry run's second credential on the sink (what the real media server's LIVE_CAPTIONS_SHARED_SECRET is)
 const NORA = { userId: 'u-nora', role: 'sme', voice: 'Daniel', name: 'Nora' };
 const LOBBY = 'orgiq:dm:u-nora:u-vera';
-const stamp = () => Date.now().toString(36);
 const pid = (p) => `${p.userId}-${stamp()}`; // the media server's per-join id: `${userId}-${Date.now().toString(36)}`
 
 /** What is said, by whom, and the pause after it. `keyword` finds it again in the stored transcript. */
@@ -84,27 +92,6 @@ const SCRIPT = [
   { who: VERA, text: 'Agreed, we should plan the roadmap review for next week.', keyword: /review for next week|plan the roadmap review/i, gap: 2500 },
   { who: NORA, text: 'Nova, create a work item for the login cookie bug.', keyword: /cookie bug|work item for the login/i, gap: 0, request: 'tool' },
 ];
-
-// ── Speech ───────────────────────────────────────────────────────────────────────────────────────────
-function speak(text, voice, file) {
-  const aiff = file.replace(/\.wav$/, '.aiff');
-  try {
-    execFileSync('say', ['-v', voice, '-o', aiff, '--', text], { stdio: 'ignore' });
-    execFileSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', aiff, file], { stdio: 'ignore' });
-    fs.rmSync(aiff, { force: true });
-    return 'say';
-  } catch {
-    // No macOS speech: a tone burst per word, so the chain still runs (the transcript of a real session would be empty, so only --dry uses this).
-    const words = text.split(/\s+/).length, ms = words * 330, n = Math.round((ms / 1000) * 16000);
-    const hz = voice === 'Samantha' ? 220 : 140;
-    const pcm = Buffer.alloc(n * 2);
-    for (let i = 0; i < n; i += 1) pcm.writeInt16LE(Math.round(9000 * Math.sin((2 * Math.PI * hz * i) / 16000) * (Math.sin(Math.PI * ((i / 16000) * 3)) ** 2)), i * 2);
-    const h = Buffer.alloc(44); h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVEfmt ', 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
-    h.writeUInt32LE(16000, 24); h.writeUInt32LE(32000, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
-    fs.writeFileSync(file, Buffer.concat([h, pcm]));
-    return 'tones';
-  }
-}
 
 // ── A fake provider (dry run): replays a canned session, driven by the audio it is sent ──────────────────
 function startFakeProvider(script) {
@@ -163,92 +150,13 @@ function startFakeProvider(script) {
   return { seen, close: () => new Promise((r) => { for (const c of wss.clients) c.terminate(); wss.close(() => r()); }) };
 }
 
-// ── A fake media server (dry run): the tap API the arming talks to ───────────────────────────────────
-function startFakeMedia() {
-  const log = [];
-  const server = http.createServer((req, res) => {
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      let body = null; try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null; } catch { body = null; }
-      log.push({ method: req.method, url: req.url, auth: req.headers.authorization === 'Bearer dry-admin-token', body });
-      if (req.headers.authorization !== 'Bearer dry-admin-token') { res.writeHead(401).end(); return; }
-      if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'application/json' }).end('[]'); return; }
-      if (req.method === 'DELETE') { res.writeHead(204).end(); return; }
-      res.writeHead(201, { 'content-type': 'application/json' }).end(JSON.stringify({ tapId: 'tap-dry-1' }));
-    });
-  });
-  return new Promise((resolve) => server.listen(MEDIA_PORT, '127.0.0.1', () => resolve({ log, close: () => new Promise((r) => server.close(() => r())) })));
-}
-
-// ── The middleware, on its own port ──────────────────────────────────────────────────────────────────
-function startMiddleware() {
-  const env = {
-    PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NODE_ENV: 'development',
-    INSECURE_DEV_MODE: 'true', AUTH_DEMO_MODE: 'true', DEV_OFFLINE: 'true', SPEND_HOLDS_UNATTRIBUTED: 'allow',
-    MOCK_AURORA: 'true', MOCK_AGENTCORE: 'true', MOCK_GUARDRAILS: 'true', MOCK_CLOUDWATCH: 'true', MOCK_QUEUE: 'true',
-    POLICY_STORE_ID: '', SESSION_SIGNING_SECRET_ARN: '', COGNITO_USER_POOL_ID: '', COGNITO_CLIENT_ID: '', COGNITO_CLIENT_SECRET: '', COGNITO_DOMAIN: '', COGNITO_CALLBACK_URL: '',
-    PORT: String(PORT), MEETING_ASSISTANT_ENABLED: 'true', MEETING_ASSISTANT_LIVE: '1', VOICE_LOG_DIR: path.join(OUT, 'voice-log'),
-    ...(DRY ? {
-      // The same real session class, pointed at the fake provider with a dummy key; the real key is never read in a dry run.
-      OPENAI_API_KEY: 'dry-run-key', OPENAI_BASE_URL: `http://127.0.0.1:${PROVIDER_PORT}/v1`,
-      MEETING_ASSISTANT_MEDIA_URL: `http://127.0.0.1:${MEDIA_PORT}`, MEETING_ASSISTANT_MEDIA_ADMIN_TOKEN: 'dry-admin-token', MEETING_ASSISTANT_SINK_BASE_URL: BASE, MEETING_ASSISTANT_SINK_SECRET: SINK_SECRET,
-    } : {}), // live: the key is read by middleware/src/config.ts from middleware/.env, as the voice navigator's is; no media server, so no tap is armed
-  };
-  const logFile = fs.openSync(path.join(OUT, 'middleware.log'), 'w');
-  const child = spawn(process.execPath, [path.join(MW, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'src/index.ts'], { cwd: MW, env, stdio: ['ignore', logFile, logFile] });
-  return child;
-}
-async function waitHealthy(child, ms = 90_000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (child.exitCode !== null) throw new Error(`the middleware exited with ${child.exitCode}`);
-    try { const r = await fetch(`${BASE}/api/health`); if (r.status < 500) return; } catch { /* not yet */ }
-    await sleep(500);
-  }
-  throw new Error('the middleware did not come up in time');
-}
-const tailLog = (n = 15) => { try { return fs.readFileSync(path.join(OUT, 'middleware.log'), 'utf8').split('\n').slice(-n).join('\n'); } catch { return ''; } };
-
-// ── People ───────────────────────────────────────────────────────────────────────────────────────────
-class Person {
-  constructor(p) { this.p = p; this.cookies = new Map(); this.ws = null; this.frames = []; }
-  async call(method, url, body) {
-    const res = await fetch(`${BASE}${url}`, { method, headers: { 'content-type': 'application/json', cookie: [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-    for (const c of res.headers.getSetCookie?.() ?? []) { const [kv] = c.split(';'); const i = kv.indexOf('='); if (i > 0) this.cookies.set(kv.slice(0, i), kv.slice(i + 1)); }
-    const text = await res.text(); let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = null; }
-    return { status: res.status, json };
-  }
-  async signIn() {
-    const login = await this.call('POST', '/api/session/login', { userId: this.p.userId });
-    if (login.status !== 200) throw new Error(`login ${this.p.userId}: ${login.status}`);
-    const role = await this.call('POST', '/api/session/role', { tenant: 'orgiq', role: this.p.role });
-    if (role.status !== 200) throw new Error(`role ${this.p.role}: ${role.status}`);
-    const tok = await this.call('GET', '/api/session/realtime-token');
-    if (tok.status !== 200 || !tok.json?.token) throw new Error(`realtime token ${this.p.userId}: ${tok.status}`);
-    this.realtime = tok.json.token;
-  }
-  async connect() {
-    this.ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, ['bearer-token-v1', this.realtime]);
-    this.ws.addEventListener('message', (e) => { try { this.frames.push(JSON.parse(String(e.data))); } catch { /* not json */ } });
-    await new Promise((resolve, reject) => { this.ws.addEventListener('open', () => resolve()); this.ws.addEventListener('error', () => reject(new Error('socket refused'))); });
-    await this.waitFrame((f) => f.type === 'session', 10_000);
-  }
-  send(frame) { this.ws.send(JSON.stringify(frame)); }
-  async waitFrame(pred, ms = 15_000) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) { const f = this.frames.find(pred); if (f) return f; await sleep(100); }
-    throw new Error('an expected frame never arrived');
-  }
-}
-
 async function main() {
   console.log(`live-e2e: ${DRY ? 'DRY RUN (fake provider, no cost)' : 'PAID RUN (real provider session)'}; working folder ${OUT}`);
   // 1. Speech, and the timeline the taps will play.
   const timeline = []; let at = 500; const spans = [];
   for (const [i, item] of SCRIPT.entries()) {
     const file = path.join(OUT, `u${i + 1}.wav`);
-    const how = speak(item.text, item.who.voice, file);
+    const how = speakToFile(item.text, item.who.voice, file);
     const samples = readWav(file).length, ms = Math.round((samples / 16000) * 1000);
     timeline.push({ participantId: null, who: item.who, wav: path.basename(file), atMs: at });
     spans.push({ ...item, startMs: at, endMs: at + ms, how });
@@ -257,18 +165,17 @@ async function main() {
   console.log(`speech: ${spans[0].how}; ${spans.length} utterances, ${Math.round(at / 1000)} s of call audio`);
 
   const provider = DRY ? startFakeProvider(SCRIPT) : null;
-  const media = DRY ? await startFakeMedia() : null;
-  const child = startMiddleware();
-  const vera = new Person(VERA), nora = new Person(NORA);
-  let callId = null, invited = false, watchdog = null, dismissed = false, providerErrors = null;
-  const dismiss = async () => {
-    if (!invited || dismissed) return;
-    dismissed = true;
-    try { await vera.call('POST', `/api/calls/${encodeURIComponent(callId)}/assistant/dismiss`); } catch { /* the middleware is stopped below */ }
-  };
-  const hardStop = () => { console.log(`HARD STOP: ${HARD_STOP_MS / 1000} s since the invite`); void dismiss().finally(() => { try { child.kill('SIGTERM'); } catch { /* gone */ } process.exit(1); }); };
+  const media = DRY ? await startFakeMedia(MEDIA_PORT) : null;
+  if (provider) guard.onClose(() => provider.close());
+  if (media) guard.onClose(() => media.close());
+  const child = startMiddleware({ dir: OUT, ports: PORTS, dry: DRY, limitSeconds: LIMIT_SECONDS, sinkBase: BASE });
+  guard.attachChild(child);
+  const vera = new Person(VERA, BASE, PORT), nora = new Person(NORA, BASE, PORT);
+  vera.keepAudioFrames = true; nora.keepAudioFrames = true;
+  let callId = null, invited = false, watchdog = null, providerErrors = null;
+  const hardStop = () => { console.log(`HARD STOP: ${HARD_STOP_MS / 1000} s since the invite`); void guard.shutdown().finally(() => process.exit(1)); };
   try {
-    await waitHealthy(child);
+    await waitHealthy(child, BASE);
     await vera.signIn(); await nora.signIn();
     await vera.connect(); await nora.connect();
 
@@ -298,6 +205,7 @@ async function main() {
     const invite = await vera.call('POST', `${A}/invite`, {});
     if (invite.status !== 201) { check('Vera invites Nova', false, `HTTP ${invite.status} ${JSON.stringify(invite.json)?.slice(0, 160)}`); throw new Error('the invite was refused; nothing was started'); }
     invited = true;
+    guard.onDismiss(async () => { const d = await vera.call('POST', `/api/calls/${encodeURIComponent(callId)}/assistant/dismiss`); return { status: d.status, state: d.json?.state }; });
     watchdog = setTimeout(hardStop, HARD_STOP_MS); watchdog.unref?.();
     const inviteAt = Date.now();
     check('Vera invites Nova', true, 'listening');
@@ -436,7 +344,7 @@ async function main() {
 
     // 8. Dismiss, and what it cost.
     clearTimeout(watchdog);
-    const left = await vera.call('POST', `${A}/dismiss`); dismissed = true;
+    const left = await vera.call('POST', `${A}/dismiss`); guard.onDismiss(null);
     check('Vera dismisses Nova', left.status === 200 && left.json?.state === 'left', `HTTP ${left.status}`);
     const after = (await vera.call('GET', `${A}/state`)).json;
     let ledger = '';
@@ -455,15 +363,10 @@ async function main() {
     }
   } catch (e) {
     check('the run completed', false, e.message);
-    console.log(tailLog());
+    console.log(tailLogOf(OUT));
   } finally {
     if (watchdog) clearTimeout(watchdog);
-    await dismiss();
-    try { child.kill('SIGTERM'); } catch { /* gone */ }
-    await new Promise((r) => { if (child.exitCode !== null) r(); else { child.once('exit', r); setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } r(); }, 5000); } });
-    for (const p of [vera, nora]) try { p.ws?.close(); } catch { /* closed */ }
-    await provider?.close(); await media?.close();
-    if (!KEEP) fs.rmSync(OUT, { recursive: true, force: true });
+    await guard.shutdown();
   }
   console.log(`provider error events this call: ${providerErrors ?? 'unknown'} (a count only; codes are kept on the session, never their text)`);
   const failed = results.filter((r) => !r.ok);
